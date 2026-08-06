@@ -1,0 +1,107 @@
+<svg viewBox="0 0 1000 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Three data sources (NVD, CISA KEV, FIRST EPSS) join on CVE ID into a feature table that trains a calibrated XGBoost classifier; the model serves probability and SHAP explanations through a FastAPI endpoint, and a drift monitor triggers retraining.">
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f8fa; stroke: #24292f; stroke-width: 1.5; }
+    .box-accent { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .box-model { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .box-out { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .line { stroke: #24292f; stroke-width: 1.5; fill: none; }
+    .line-dashed { stroke: #656d76; stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; }
+    .label { font: 13px -apple-system, "Segoe UI", sans-serif; fill: #24292f; }
+    .label-b { font: 700 13px -apple-system, "Segoe UI", sans-serif; fill: #24292f; }
+    .label-small { font: 11px -apple-system, "Segoe UI", sans-serif; fill: #57606a; }
+    .title { font: 700 15px -apple-system, "Segoe UI", sans-serif; fill: #24292f; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; }
+      .box { fill: #161b22; stroke: #c9d1d9; }
+      .box-accent { fill: #0c2d48; stroke: #58a6ff; }
+      .box-model { fill: #3b2d05; stroke: #d29922; }
+      .box-out { fill: #0f2e1b; stroke: #3fb950; }
+      .line { stroke: #c9d1d9; }
+      .line-dashed { stroke: #8b949e; }
+      .label { fill: #c9d1d9; }
+      .label-b { fill: #c9d1d9; }
+      .label-small { fill: #8b949e; }
+      .title { fill: #f0f6fc; }
+    }
+  </style>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="label-b" style="fill:currentColor"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1000" height="620"/>
+
+  <!-- Row 1: three sources -->
+  <rect class="box" x="40"  y="30" width="220" height="70" rx="6"/>
+  <text class="label-b" x="150" y="58" text-anchor="middle">NVD</text>
+  <text class="label-small" x="150" y="76" text-anchor="middle">CVSS vectors + NLP on</text>
+  <text class="label-small" x="150" y="90" text-anchor="middle">CVE descriptions</text>
+
+  <rect class="box" x="390" y="30" width="220" height="70" rx="6"/>
+  <text class="label-b" x="500" y="58" text-anchor="middle">CISA KEV</text>
+  <text class="label-small" x="500" y="76" text-anchor="middle">Verified actively-exploited</text>
+  <text class="label-small" x="500" y="90" text-anchor="middle">CVE list</text>
+
+  <rect class="box" x="740" y="30" width="220" height="70" rx="6"/>
+  <text class="label-b" x="850" y="58" text-anchor="middle">FIRST EPSS</text>
+  <text class="label-small" x="850" y="76" text-anchor="middle">Daily exploit-probability</text>
+  <text class="label-small" x="850" y="90" text-anchor="middle">baseline score</text>
+
+  <!-- arrows down into join, labeled with what each contributes -->
+  <path class="line" d="M150,100 L150,150 L470,150" marker-end="url(#arrow)" style="color:#24292f"/>
+  <text class="label" x="160" y="140">features (cvss_base_score, attack_vector, ...)</text>
+
+  <path class="line" d="M500,100 L500,150" marker-end="url(#arrow)" style="color:#24292f"/>
+  <text class="label" x="510" y="130">label: is_kev (ground truth)</text>
+
+  <path class="line" d="M850,100 L850,150 L530,150" marker-end="url(#arrow)" style="color:#24292f"/>
+  <text class="label" x="700" y="140">baseline feature: epss_score</text>
+
+  <!-- Feature table (join on CVE ID) -->
+  <rect class="box-accent" x="330" y="160" width="340" height="60" rx="6"/>
+  <text class="label-b" x="500" y="184" text-anchor="middle">Feature table</text>
+  <text class="label-small" x="500" y="202" text-anchor="middle">joined on CVE ID</text>
+
+  <!-- down to training -->
+  <line class="line" x1="500" y1="220" x2="500" y2="270" marker-end="url(#arrow)" style="color:#24292f"/>
+
+  <!-- Training -->
+  <rect class="box-model" x="330" y="280" width="340" height="70" rx="6"/>
+  <text class="label-b" x="500" y="306" text-anchor="middle">XGBoost training</text>
+  <text class="label-small" x="500" y="324" text-anchor="middle">scale_pos_weight for imbalance,</text>
+  <text class="label-small" x="500" y="338" text-anchor="middle">isotonic calibration, scored on PR-AUC</text>
+
+  <!-- down to artifact -->
+  <line class="line" x1="500" y1="350" x2="500" y2="400" marker-end="url(#arrow)" style="color:#24292f"/>
+  <text class="label" x="510" y="380">writes</text>
+
+  <!-- model artifact -->
+  <rect class="box" x="405" y="410" width="190" height="46" rx="6"/>
+  <text class="label-b" x="500" y="438" text-anchor="middle">model.joblib</text>
+
+  <!-- fan out to FastAPI and Svelte UI -->
+  <line class="line" x1="500" y1="456" x2="500" y2="490" style="color:#24292f"/>
+  <path class="line" d="M500,490 L280,490 L280,520" marker-end="url(#arrow)" style="color:#24292f"/>
+  <path class="line" d="M500,490 L720,490 L720,520" marker-end="url(#arrow)" style="color:#24292f"/>
+  <text class="label" x="330" y="483">loads</text>
+  <text class="label" x="640" y="483">loads</text>
+
+  <rect class="box-out" x="150" y="530" width="260" height="70" rx="6"/>
+  <text class="label-b" x="280" y="556" text-anchor="middle">FastAPI /score</text>
+  <text class="label-small" x="280" y="574" text-anchor="middle">exploit_probability +</text>
+  <text class="label-small" x="280" y="588" text-anchor="middle">SHAP contributions per CVE</text>
+
+  <rect class="box-out" x="590" y="530" width="260" height="70" rx="6"/>
+  <text class="label-b" x="720" y="556" text-anchor="middle">Svelte UI</text>
+  <text class="label-small" x="720" y="574" text-anchor="middle">risk matrix +</text>
+  <text class="label-small" x="720" y="588" text-anchor="middle">feature-contribution view</text>
+
+  <!-- drift feedback loop back to training -->
+  <path class="line-dashed" d="M280,530 L280,460 L60,460 L60,315 L330,315" marker-end="url(#arrow)" style="color:#656d76"/>
+  <text class="label-small" x="295" y="500">drift monitor polls</text>
+  <text class="label-small" x="295" y="514">/score outputs</text>
+  <text class="label-small" x="90" y="308">drift-triggered retrain</text>
+</svg>
