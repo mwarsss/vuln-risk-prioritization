@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.ingestion.kev_client import fetch_kev_catalog
+
 RAW_DIR = Path("data/raw/kaggle_cve_kev_epss")
 OUT_PATH = Path("data/processed/features.parquet")
 
@@ -86,6 +88,21 @@ def build() -> pd.DataFrame:
     df["published_year"] = df["published_date"].dt.year
     df["is_kev"] = df["cisa_kev"].astype(str).str.lower().eq("true").astype(int)
     df["desc_len"] = df["description"].fillna("").str.len()
+
+    # The mirror carries KEV membership as a bare boolean, so the only target it
+    # can express is "exploited ever, as of the pull date". Join dateAdded from
+    # the primary CISA feed to make a horizon-bounded label possible.
+    kev = fetch_kev_catalog()[["cve_id", "kev_date_added", "kev_ransomware"]]
+    df = df.merge(kev, on="cve_id", how="left")
+
+    # The mirror's boolean and the live feed can disagree — the feed moves daily
+    # and the mirror is a snapshot. Trust the feed where it has an entry.
+    from_feed = df["kev_date_added"].notna()
+    disagree = int((from_feed & df["is_kev"].eq(0)).sum())
+    if disagree:
+        print(f"note: {disagree:,} CVEs dated in the CISA feed but flagged False in the "
+              "mirror (feed is newer) — relabelling to positive")
+        df.loc[from_feed, "is_kev"] = 1
 
     return df
 

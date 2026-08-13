@@ -26,6 +26,7 @@ import pandas as pd
 
 from src.ingestion.epss_history import ARCHIVE_START, attach_pit_epss
 from src.model.evaluate import IN_PATH, build_matrices, fit_xgb, score_ranker
+from src.schema import build_horizon_label
 
 
 def main() -> None:
@@ -33,12 +34,35 @@ def main() -> None:
     ap.add_argument("--train-end", default="2023-06-30")
     ap.add_argument("--test-end", default="2024-12-31")
     ap.add_argument("--quantize", default="MS", help="MS=monthly snapshots, D=daily")
+    ap.add_argument("--horizon-days", type=int, default=365,
+                    help="label positive if added to KEV within N days of publication; "
+                         "0 keeps the open-ended 'in KEV as of pull date' target")
     ap.add_argument("--out", default="data/processed/eval_results_pit.json")
     args = ap.parse_args()
 
     df = pd.read_parquet(IN_PATH).dropna(subset=["published_date"])
     df["is_kev"] = df["is_kev"].astype(bool)
     df["published_date"] = pd.to_datetime(df["published_date"])
+
+    if args.horizon_days > 0:
+        if "kev_date_added" not in df.columns:
+            raise SystemExit(
+                "kev_date_added missing — run `python -m src.features.prepare_kaggle` "
+                "to rejoin the CISA feed, or pass --horizon-days 0"
+            )
+        as_of = pd.to_datetime(df["kev_date_added"]).max()
+        label = build_horizon_label(df, args.horizon_days, as_of=as_of)
+        immature = int(label.isna().sum())
+        flipped = int((df["is_kev"] & label.fillna(False).eq(False)).sum())
+        print(f"label: exploited within {args.horizon_days}d of publication "
+              f"(catalog as-of {as_of.date()})")
+        print(f"  {flipped:,} CVEs are in KEV but fell outside the horizon -> negative")
+        print(f"  {immature:,} rows dropped as label-immature\n")
+        df = df.assign(is_kev=label)
+        df = df[df["is_kev"].notna()]
+        df["is_kev"] = df["is_kev"].astype(bool)
+    else:
+        print("label: open-ended 'in KEV as of pull date'\n")
 
     # Keep the leaked EPSS under a different name so both can be scored side by side.
     df = df.rename(columns={"epss_score": "epss_leaked"})
@@ -101,7 +125,7 @@ def main() -> None:
         json.dump({"base_rate": float(base), "train_end": args.train_end,
                    "test_end": args.test_end, "n_train": len(train),
                    "n_test": len(test), "pit_epss_coverage": float(cov),
-                   "quantize": args.quantize,
+                   "quantize": args.quantize, "horizon_days": args.horizon_days,
                    "results": [r.__dict__ for r in results]},
                   f, indent=2, default=str)
     print(f"\nwrote {args.out}")

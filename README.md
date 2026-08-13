@@ -9,21 +9,27 @@ See [`PROJECT_PLAN.md`](./PROJECT_PLAN.md) for the problem statement, architectu
 Read [`FINDINGS.md`](./FINDINGS.md) before quoting any number from this repo.
 
 Evaluated point-in-time (EPSS read from dated archive snapshots, not a current
-pull), on CVEs published 2023-07 → 2024-12, base rate 0.459%:
+pull) against a bounded target (added to CISA KEV within 365 days of
+publication), on CVEs published 2023-07 → 2024-12, base rate 0.422%:
 
 | ranker | PR-AUC | P@100 |
 |---|---|---|
-| CVSS base score | 0.0125 | 0.050 |
-| EPSS (point-in-time) | **0.2529** | 0.480 |
-| XGB (no EPSS) | 0.0813 | 0.200 |
-| XGB + EPSS (point-in-time) | 0.2304 | **0.510** |
+| CVSS base score | 0.0120 | 0.050 |
+| **EPSS (point-in-time)** | **0.2701** | **0.480** |
+| XGB (no EPSS) | 0.0813 | 0.140 |
+| XGB + EPSS (point-in-time) | 0.2066 | 0.410 |
 
-The model **does not beat EPSS on PR-AUC** — it is 8.9% worse — but improves
-precision at the top-100 cutoff where triage actually happens. An earlier run
-reported 0.4176 PR-AUC; that number came from EPSS scores pulled in 2026 for
-CVEs published in 2023-24, after the exploitation they were predicting, and is
-not reproducible in deployment. `src/schema.py` now rejects feature frames that
-would repeat it.
+**The model does not currently beat EPSS** — worse on PR-AUC and worse at P@100,
+the cutoff that matters for triage, in **0 of 5 seeds** (five-seed mean 0.1866 ±
+0.0019 against EPSS at 0.2701). The content-only model is a real but weak
+standalone signal (19.3x lift over base rate) that does not survive combination
+with a stronger one — most likely a capacity problem, 299 training positives
+against ~3,000 features.
+
+An earlier run reported 0.4176 PR-AUC. That came from EPSS scores pulled in 2026
+for CVEs published in 2023-24 — after the exploitation they were predicting —
+scored against an open-ended "in KEV ever" label. `src/schema.py` now rejects
+feature frames that would repeat either mistake.
 
 ## Architecture
 

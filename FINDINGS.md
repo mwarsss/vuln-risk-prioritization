@@ -72,19 +72,69 @@ The defensible claim is: *a content-only model reaches 17.7x lift over base
 rate using no proprietary feed, and adding it to EPSS improves the top-100
 cutoff while slightly degrading global ranking.* Not "beats EPSS".
 
-## 4. Known remaining gap: the label is still open-ended
+## 4. Bounded label (resolved)
 
-`is_kev` means "appears in CISA KEV **as of the 2026-08-09 pull**", not "was
-exploited within N days of publication". A CVE published in 2023 and added to
-KEV in 2026 counts as a positive the model was expected to catch at publication
-time. This inflates apparent achievability and drifts every time CISA backfills.
+`is_kev` originally meant "appears in CISA KEV **as of the pull date**" — a CVE
+published in 2023 and added to KEV in 2026 counted as something the model should
+have caught on day one. `kev_client.py` now pulls `dateAdded` from the primary
+CISA feed (1,665 entries, zero missing dates) and `prepare_kaggle.py` joins it,
+so `schema.build_horizon_label()` can bound the target to *exploited within N
+days of publication*. Immature rows come back `<NA>` and are dropped rather than
+silently counted as negatives.
 
-The fix needs `kev_date_added`, which the Kaggle mirror drops — it is present in
-the primary CISA feed that `src/ingestion/kev_client.py` already targets.
-`src.schema.build_horizon_label()` implements the bounded target
-(`exploited_within_365d`, immature rows returned as `<NA>` rather than silently
-counted as negatives) and is ready to use once that column is ingested.
-**Numbers in §2 should be treated as provisional until this lands.**
+Two structural facts about the catalogue surfaced doing this, both of which
+affect how the label should be read:
+
+- **287 CVEs share `dateAdded` = 2021-11-03**, the day the catalogue launched.
+  That is a backfill batch, not detection latency.
+- **213 of 918 in-window KEV CVEs (23%) have negative days-to-KEV** — CISA
+  flagged them *before* NVD published them. Median days-to-KEV is 15, p25 is 0.
+  For roughly a quarter of positives, exploitation is already public knowledge
+  at the moment the model is asked to predict it.
+
+Re-run at a 365-day horizon (774 in-KEV CVEs fall outside the horizon and become
+negatives; test base rate drops 0.459% → 0.422%):
+
+| ranker | PR-AUC | ROC-AUC | P@100 | P@500 | R@1000 |
+|---|---|---|---|---|---|
+| CVSS base score | 0.0120 | 0.747 | 0.050 | 0.022 | 0.070 |
+| EPSS (leaked) | 0.4136 | 0.974 | 0.730 | 0.228 | 0.624 |
+| **EPSS (point-in-time)** | **0.2701** | 0.800 | **0.480** | **0.204** | **0.507** |
+| XGB (no EPSS) | 0.0813 | 0.884 | 0.140 | 0.096 | 0.345 |
+| XGB + EPSS (point-in-time) | 0.2066 | 0.912 | 0.410 | 0.166 | 0.480 |
+| XGB + EPSS (leaked) | 0.4157 | 0.989 | 0.510 | 0.328 | 0.869 |
+
+**This reverses the one win the model had.** Under the open-ended label the
+ensemble beat EPSS at P@100 (0.510 vs 0.480). Under the bounded label it loses
+there too: 0.410 vs 0.480, and 0.2066 vs 0.2701 on PR-AUC — 23.5% worse. The
+earlier P@100 edge came from CVEs exploited *long* after publication, which the
+open-ended target rewarded and a 1-year triage horizon does not.
+
+Honest standing: **adding this model to EPSS makes prioritization worse on every
+metric except ROC-AUC**, and ROC-AUC is the wrong metric at a 0.42% base rate.
+The content-only model is a real but weak signal (0.0813 PR-AUC, 19.3x lift over
+base rate) that does not survive combination with a stronger one.
+
+This is not seed noise. Over five seeds on the same split:
+
+| ranker | PR-AUC | P@100 |
+|---|---|---|
+| EPSS (point-in-time) | 0.2701 | 0.480 |
+| XGB (no EPSS) | 0.0752 ± 0.0042 | 0.144 ± 0.020 |
+| XGB + EPSS | 0.1866 ± 0.0019 | 0.368 ± 0.007 |
+
+**XGB + EPSS beats EPSS in 0 of 5 seeds.** The 0.0835 shortfall is roughly 44
+standard deviations of seed variance, so the ranking is not close. Note also
+that seed 42 — the one used in the table above and in `evaluate.py` — returns
+0.2066, well above the 0.1866 five-seed mean. The headline single-seed figure
+flatters the model; the mean is the number to quote.
+
+The most likely cause is capacity, not concept: 299 positives in train against
+~3,000 TF-IDF features plus one-hots, with `scale_pos_weight` ≈ 180. That is a
+setup that overfits and dilutes a good input rather than building on it. Worth
+trying before abandoning: drop TF-IDF, use EPSS as a monotone constraint or as
+an offset/prior instead of one feature among thousands, or rank-blend
+`XGB (no EPSS)` with EPSS rather than training on top of it.
 
 ## 5. Guardrail
 
