@@ -2,6 +2,15 @@
 
 Three sources, each with a distinct role in the pipeline: features, ground-truth labels, and probability baselines.
 
+## Bulk load — Kaggle mirror (recommended for training)
+
+`francescomanzoni/vulnerability-management-datasets` on Kaggle mirrors all three sources below, pre-joined on `cve_id`, updated daily. Pulled 2026-08-09 (version 196) into `data/raw/kaggle_cve_kev_epss/`:
+
+- **`cve_cisa_epss_enriched_dataset.csv`** (350,426 rows) — CVSS fields (`base_score`, `exploitability_score`, `impact_score`, `attack_vector`, `attack_complexity`, `privileges_required`, `user_interaction`, `scope`, `confidentiality_impact`, `integrity_impact`, `availability_impact`), `epss_score`, `epss_perc`, `cisa_kev` (bool — this is `y`), `published_date`. Coverage 1988-10-01 to 2026-08-09. 1,662 rows with `cisa_kev=True` (~0.5% positive rate).
+- **`cve_corpus.csv`** (374,365 rows) — `description_data` (free text, for the NLP feature work), `cwe_data`, `cpe_data` (vendor/product). Join on `cve_id`.
+
+Use this for initial training/EDA instead of paging the NVD API — it's the same fields pre-joined. Re-pull periodically via `kagglehub.dataset_download('francescomanzoni/vulnerability-management-datasets')` (requires `~/.kaggle/access_token`) to pick up new KEV entries. Still hit the live APIs below for anything published after the last pull, or if strict provenance from the primary source is required.
+
 ## 1. NVD — National Vulnerability Database (Features)
 
 Provides the base feature vectors for every CVE: CVSS vectors, CWE categories, affected product/vendor (CPE), and free-text vulnerability descriptions. Apply NLP to the descriptions to surface latent technical indicators (attack vector, privileges required, etc.) not captured by the structured fields alone.
