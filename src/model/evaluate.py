@@ -83,8 +83,8 @@ def build_matrices(train: pd.DataFrame, test: pd.DataFrame, use_epss: bool):
     num = list(NUM_COLS) + (["epss_score"] if use_epss else [])
 
     enc = OneHotEncoder(handle_unknown="ignore", min_frequency=30, sparse_output=True)
-    Xtr_cat = enc.fit_transform(train[CAT_COLS].astype(str).fillna("NA"))
-    Xte_cat = enc.transform(test[CAT_COLS].astype(str).fillna("NA"))
+    Xtr_cat = enc.fit_transform(train[CAT_COLS].fillna("NA").astype(str))
+    Xte_cat = enc.transform(test[CAT_COLS].fillna("NA").astype(str))
 
     tfidf = TfidfVectorizer(max_features=3000, ngram_range=(1, 2),
                             min_df=5, stop_words="english", sublinear_tf=True)

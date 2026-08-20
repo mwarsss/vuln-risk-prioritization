@@ -5,3 +5,7 @@ data/raw/
 data/processed/
 *.joblib
 .env
+
+# Note: data/raw/ above already covers data/raw/epss_snapshots/ — ~1,300 files
+# and 1.6 GB once daily alignment is used. Rebuild with
+# `python -m src.ingestion.prefetch_daily`.

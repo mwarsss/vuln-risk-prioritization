@@ -138,8 +138,16 @@ def attach_pit_epss(
     # Anything before the archive exists cannot be scored point-in-time.
     out.loc[out["_snap"] < ARCHIVE_START, "_snap"] = pd.NaT
 
+    # Keep only the rows each snapshot is actually needed for. Concatenating whole
+    # snapshots works at monthly resolution (~46 files, ~10M rows) but daily
+    # alignment needs ~1,300, and 1,300 x 210k rows is a ~276M-row lookup that
+    # exhausts memory before the merge runs. Filtering first bounds the lookup by
+    # the size of the input frame instead of by the number of snapshots.
+    wanted = out.dropna(subset=["_snap"]).groupby("_snap")["cve_id"].agg(set)
+
     frames = []
-    for snap in sorted(out["_snap"].dropna().unique()):
+    snaps = sorted(out["_snap"].dropna().unique())
+    for i, snap in enumerate(snaps, 1):
         snap = pd.Timestamp(snap)
         try:
             table = fetch_snapshot(snap)
@@ -151,7 +159,10 @@ def attach_pit_epss(
             except FileNotFoundError:
                 log.warning("no snapshot near %s; those rows get NaN EPSS", snap.date())
                 continue
+        table = table[table["cve_id"].isin(wanted.loc[snap])]
         frames.append(table.assign(_snap=snap))
+        if len(snaps) > 100 and i % 200 == 0:
+            log.info("attached %d/%d snapshots", i, len(snaps))
 
     if not frames:
         out[["epss_score", "epss_perc", "epss_as_of"]] = pd.NA

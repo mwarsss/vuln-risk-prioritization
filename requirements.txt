@@ -1,9 +1,15 @@
 requests
 pandas
 pyarrow
+numpy
+scipy
 scikit-learn
 xgboost
 shap
 fastapi
 uvicorn
 joblib
+
+# tests/ — the ranking primitives in src/model/ are pure functions and are
+# tested directly; `python -m tests.test_ranking` also runs without pytest.
+pytest

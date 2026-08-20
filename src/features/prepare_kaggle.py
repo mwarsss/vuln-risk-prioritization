@@ -15,6 +15,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.ingestion.kev_client import fetch_kev_catalog
+from src.schema import validate
 
 RAW_DIR = Path("data/raw/kaggle_cve_kev_epss")
 OUT_PATH = Path("data/processed/features.parquet")
@@ -96,14 +97,32 @@ def build() -> pd.DataFrame:
     df = df.merge(kev, on="cve_id", how="left")
 
     # The mirror's boolean and the live feed can disagree — the feed moves daily
-    # and the mirror is a snapshot. Trust the feed where it has an entry.
+    # and the mirror is a snapshot. Trust the feed where it has an entry, in both
+    # directions: a row the mirror calls positive but the feed has no entry for
+    # would otherwise keep is_kev=1 with kev_date_added NaT, which
+    # build_horizon_label scores as negative while evaluate.py counts as positive.
     from_feed = df["kev_date_added"].notna()
-    disagree = int((from_feed & df["is_kev"].eq(0)).sum())
-    if disagree:
-        print(f"note: {disagree:,} CVEs dated in the CISA feed but flagged False in the "
+    added = int((from_feed & df["is_kev"].eq(0)).sum())
+    if added:
+        print(f"note: {added:,} CVEs dated in the CISA feed but flagged False in the "
               "mirror (feed is newer) — relabelling to positive")
-        df.loc[from_feed, "is_kev"] = 1
+    dropped = int((~from_feed & df["is_kev"].eq(1)).sum())
+    if dropped:
+        print(f"note: {dropped:,} CVEs flagged True in the mirror with no entry in the "
+              "CISA feed (delisted or renamed) — relabelling to negative so the "
+              "boolean and the date agree")
+    df["is_kev"] = from_feed.astype(int)
 
+    report = validate(df, require_pit=False)
+    print("\nschema check (require_pit=False — this frame carries a current-pull EPSS):")
+    print(report)
+    print(
+        "\nNOTE: epss_score/epss_perc here are a CURRENT pull with no epss_as_of, so "
+        "this frame is\nleak-prone by construction. It backs the deliberately-leaked "
+        "baseline in evaluate.py.\nPoint-in-time runs must load via "
+        "src.model.dataset.load_pit_frame, which attaches dated\nsnapshots and "
+        "validates with require_pit=True."
+    )
     return df
 
 

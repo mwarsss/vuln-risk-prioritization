@@ -178,6 +178,22 @@ class Report:
         return "\n".join(lines) or "  clean"
 
 
+SNAPSHOT_RESOLUTION_DAYS = 1  # the EPSS archive publishes at most one file per day
+
+
+def contaminated_mask(df: pd.DataFrame) -> pd.Series:
+    """Rows whose EPSS snapshot was taken on or after their CISA KEV listing.
+
+    Excludes CVEs catalogued on or before publication: for those, exploitation
+    predates the prediction task entirely and no feature alignment changes that.
+    Section 4 measures them at ~37% of positives.
+    """
+    as_of = pd.to_datetime(df["epss_as_of"])
+    published = pd.to_datetime(df["published_date"])
+    added = pd.to_datetime(df["kev_date_added"])
+    return (added > published) & (added <= as_of)
+
+
 def validate(df: pd.DataFrame, *, require_pit: bool = True) -> Report:
     """Check a feature frame against the contract.
 
@@ -214,7 +230,10 @@ def validate(df: pd.DataFrame, *, require_pit: bool = True) -> Report:
                     f"(observed {s.min():.4g}–{s.max():.4g})"
                 )
 
-    # The leakage gate.
+    # The leakage gate. These checks are deliberately independent rather than
+    # chained: an earlier one firing must not stop a later one from running, or
+    # a frame with an ordinary coverage gap silently skips the check that
+    # actually matters.
     epss_present = [c for c in POINT_IN_TIME_FEATURES if c in present]
     if epss_present:
         if "epss_as_of" not in present or df.get("epss_as_of") is None:
@@ -225,19 +244,67 @@ def validate(df: pd.DataFrame, *, require_pit: bool = True) -> Report:
                 "(src.ingestion.epss_history) or drop them."
             )
             (rep.errors if require_pit else rep.warnings).append(msg)
-        elif df["epss_as_of"].isna().any():
-            n = int(df["epss_as_of"].isna().sum())
-            (rep.errors if require_pit else rep.warnings).append(
-                f"epss_as_of: {n} row(s) missing a snapshot date while EPSS values are set"
-            )
-        elif "published_date" in present:
-            # A snapshot taken before publication cannot describe the CVE.
-            ahead = int((pd.to_datetime(df["epss_as_of"])
-                         < pd.to_datetime(df["published_date"])).sum())
-            if ahead:
-                rep.errors.append(
-                    f"epss_as_of precedes published_date on {ahead} row(s)"
+        else:
+            as_of = pd.to_datetime(df["epss_as_of"])
+
+            # A row may legitimately have no snapshot — attach_pit_epss left-joins,
+            # so uncovered CVEs get NaN for the scores AND the date together. Only
+            # a *score without a date* is unexplained.
+            scored = pd.concat([df[c].notna() for c in epss_present], axis=1).any(axis=1)
+            orphan = int((scored & as_of.isna()).sum())
+            if orphan:
+                (rep.errors if require_pit else rep.warnings).append(
+                    f"epss_as_of: {orphan} row(s) carry an EPSS value with no snapshot date"
                 )
+
+            if "published_date" in present:
+                published = pd.to_datetime(df["published_date"])
+                # A snapshot taken before publication cannot describe the CVE.
+                ahead = int((as_of < published).sum())
+                if ahead:
+                    rep.errors.append(
+                        f"epss_as_of precedes published_date on {ahead} row(s)"
+                    )
+
+                # The forward leak, and the one that is easy to reintroduce by
+                # coarsening the snapshot alignment: if a CVE reached the CISA
+                # catalogue before the snapshot used to score it, EPSS had already
+                # observed the exploitation it is meant to forecast.
+                #
+                # Two kinds, and they need different verdicts. If the snapshot sits
+                # more than one archive day past publication, a tighter alignment
+                # would have avoided the leak — that is a bug, and an error. If it
+                # is already next-day, the EPSS archive has no finer resolution to
+                # offer and the contamination is irreducible: warn, and expect the
+                # caller to drop those rows rather than silently score them.
+                if "kev_date_added" in present:
+                    contam = contaminated_mask(df)
+                    tighter_possible = as_of > published + pd.Timedelta(days=SNAPSHOT_RESOLUTION_DAYS)
+                    avoidable = int((contam & tighter_possible).sum())
+                    irreducible = int((contam & ~tighter_possible).sum())
+                    if avoidable:
+                        (rep.errors if require_pit else rep.warnings).append(
+                            f"epss_as_of postdates kev_date_added on {avoidable} row(s) "
+                            "whose KEV listing came after publication, with a snapshot "
+                            "more than a day past publication. The snapshot observed "
+                            "the exploitation it is supposed to predict, and a tighter "
+                            "alignment would avoid it — use quantize='D'."
+                        )
+                    if irreducible:
+                        rep.warnings.append(
+                            f"{irreducible} row(s) were catalogued by CISA within one "
+                            "archive day of publication, so no snapshot can predate the "
+                            "listing. Exploitation was public knowledge at publication; "
+                            "drop them rather than scoring them."
+                        )
+
+                lag = (as_of - published).dt.days.dropna()
+                if len(lag) and lag.median() > 7:
+                    rep.warnings.append(
+                        f"epss_as_of sits a median {lag.median():.0f} days after "
+                        "publication. Every day of lag is a day EPSS may have "
+                        "observed the outcome; prefer quantize='D'."
+                    )
 
     if TARGET in present and "kev_date_added" not in present:
         rep.warnings.append(

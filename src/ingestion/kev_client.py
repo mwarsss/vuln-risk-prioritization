@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 
 KEV_FEED_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 CACHE_PATH = Path("data/raw/kev_catalog.parquet")
+STALE_AFTER_DAYS = 14
 
 
 def fetch_kev_catalog(*, cache_path: Path | None = CACHE_PATH,
@@ -34,6 +35,18 @@ def fetch_kev_catalog(*, cache_path: Path | None = CACHE_PATH,
     2025-03-01 was simply absent from the catalogue before that date.
     """
     if cache_path is not None and cache_path.exists() and not refresh:
+        # This feed defines the label. A silently stale cache relabels newly
+        # catalogued CVEs as negatives and slides the label-maturity cutoff
+        # backwards, and neither shows up in any downstream output — so say how
+        # old it is rather than returning it quietly.
+        age_days = (pd.Timestamp.now() - pd.Timestamp(cache_path.stat().st_mtime, unit="s")).days
+        if age_days >= STALE_AFTER_DAYS:
+            log.warning(
+                "KEV cache at %s is %d days old and defines the training label. "
+                "Re-run with refresh=True (or `python -m src.ingestion.kev_client`) "
+                "before trusting any label-dependent result.",
+                cache_path, age_days,
+            )
         return pd.read_parquet(cache_path)
 
     log.info("fetching CISA KEV catalog")
