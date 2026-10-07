@@ -1,37 +1,35 @@
-"""Train a calibrated XGBoost classifier, optimized for PR-AUC on an imbalanced target."""
-import joblib
-import pandas as pd
-from sklearn.model_selection import StratifiedKFold, cross_val_score
-from sklearn.calibration import CalibratedClassifierCV
-from xgboost import XGBClassifier
+"""Fit the serving bundle on the point-in-time training window.
 
-FEATURE_COLS = ["cvss_base_score", "epss_score"]  # extend with encoded categoricals + NLP embeddings
-TARGET_COL = "is_kev"
+Replaces the scaffold trainer (random 5-fold CV, `cvss + epss` features,
+isotonic calibration over `scale_pos_weight`). Random folds mix publication
+dates and reward leakage; the split here is temporal, matching every evaluation
+in FINDINGS. Evaluation lives in `two_stage.py`; this only produces the artifact.
+
+    python -m src.model.train [--out model.joblib]
+"""
+from __future__ import annotations
+
+import argparse
+
+from src.model.bundle import fit_bundle
+from src.model.dataset import load_pit_frame, temporal_split
 
 
-def train(df: pd.DataFrame, model_path: str = "model.joblib") -> XGBClassifier:
-    X = df[FEATURE_COLS].fillna(-1)
-    y = df[TARGET_COL].astype(int)
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--fit-end", default="2022-12-31")
+    ap.add_argument("--val-end", default="2023-06-30")
+    ap.add_argument("--test-end", default="2024-12-31")
+    ap.add_argument("--horizon-days", type=int, default=365)
+    ap.add_argument("--out", default="model.joblib")
+    args = ap.parse_args()
 
-    base_model = XGBClassifier(
-        n_estimators=300,
-        max_depth=5,
-        learning_rate=0.05,
-        scale_pos_weight=(y == 0).sum() / max((y == 1).sum(), 1),  # counter the <5% positive-class imbalance
-        eval_metric="aucpr",
-        random_state=42,
-    )
-
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    scores = cross_val_score(base_model, X, y, cv=skf, scoring="average_precision")
-    print(f"5-fold PR-AUC: {scores.mean():.4f} +/- {scores.std():.4f}")
-
-    calibrated = CalibratedClassifierCV(base_model, method="isotonic", cv=skf)
-    calibrated.fit(X, y)
-    joblib.dump(calibrated, model_path)
-    return calibrated
+    df = load_pit_frame(args.horizon_days, args.test_end)
+    fit, _, _ = temporal_split(df, args.fit_end, args.val_end)
+    bundle = fit_bundle(fit)
+    bundle.save(args.out)
+    print(f"fit on {len(fit):,} CVEs ({int(fit['is_kev'].sum())} positives) -> {args.out}")
 
 
 if __name__ == "__main__":
-    df = pd.read_parquet("data/processed/features.parquet")
-    train(df)
+    main()

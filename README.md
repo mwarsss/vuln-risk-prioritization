@@ -84,7 +84,9 @@ src/
     blend.py         # rank-blend vs EPSS; weight chosen on validation
     complementarity.py  # per-EPSS-band: where does content add signal?
     two_stage.py     # gated policy — EPSS ranks the head, content the tail
-  api/           # FastAPI inference endpoint with SHAP explanations
+  model/bundle.py    # persisted content model + gated ranking policy (what gets served)
+  model/train.py     # temporal fit -> model.joblib
+  api/           # FastAPI: /score (one CVE) and /rank (a backlog, gated order)
 data/
   raw/           # pulled API responses + cached EPSS snapshots, untouched
   processed/     # joined feature tables (parquet)
@@ -102,5 +104,11 @@ python -m src.ingestion.epss_client  # sanity-check FIRST EPSS API
 
 python -m src.ingestion.prefetch_daily   # ~1,300 daily EPSS snapshots (~1.6 GB, once)
 python -m src.model.two_stage            # the gated-policy result
-python -m tests.test_ranking && python -m tests.test_schema_gate
+python -m pytest tests               # ranking, schema gate, serving bundle
+
+python -m src.model.train            # fit the content model -> model.joblib
+uvicorn src.api.main:app             # serve /score and /rank
 ```
+
+`/rank` falls back to EPSS-only below a ~1,500-CVE budget, where FINDINGS §9 shows the gate
+is worse than EPSS alone. EPSS passed to the API must be the value as of publication + 1 day.
