@@ -56,6 +56,8 @@ bands drops it below EPSS, so the gain is the model's, not the bands'. Ordering
 within bands by CVSS instead loses to EPSS, so the model is needed. See
 [`FINDINGS.md`](./FINDINGS.md) §7–11.
 
+![PR-AUC by six-month test period: the banded method is above EPSS alone in all six, from +17% to +63%, and +55% on the 2025 holdout.](./docs/rolling-windows.png)
+
 ### Three leaks, all measured
 
 An early run reported 0.4176 PR-AUC, from EPSS scores pulled in 2026 for CVEs
@@ -88,6 +90,8 @@ python -m src.rank --file scan_cves.txt --top 50 --csv ranked.csv
 uvicorn src.api.main:app         # POST /rank {"cve_ids": [...]}, GET /health
 ```
 
+![Terminal output of the rank command: seven CVEs ranked by band and model score, with a made-up ID flagged as not in NVD.](./docs/rank-cli.png)
+
 Each CVE gets today's EPSS and its NVD record (description, CVSS, CWE — never
 CPE). EPSS sets the band; the model orders within it. CVEs with no EPSS yet join
 the bottom band; CVEs NVD does not know rank last in their band and are flagged.
@@ -95,7 +99,7 @@ NVD's public limit is 5 requests / 30 s — set `NVD_API_KEY` for large scans.
 
 ## Architecture
 
-![Three data sources join on CVE ID into a feature table that trains a calibrated XGBoost classifier; the model serves probability and SHAP explanations via FastAPI and a Svelte UI, with a drift monitor triggering retraining.](./docs/architecture.svg)
+![Offline, NVD, EPSS archive and CISA KEV feed a validated loader and training script that save the model; live, CVE IDs from a scan are fetched from EPSS and NVD, scored in EPSS bands with the model ordering inside each band, and returned as a CLI table, CSV or API response.](./docs/architecture.png)
 
 ## Layout
 
