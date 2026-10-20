@@ -1,6 +1,10 @@
-"""Render docs/banded-vs-epss.png from data/processed/two_stage.json.
+"""Render docs/banded-vs-epss.png.
 
-Run after `python -m src.model.two_stage`; needs matplotlib.
+EPSS and the gate come from data/processed/two_stage.json; the banded line is
+the point-in-time-safe model (no CPE-derived features) from
+data/processed/verify_banded.json — the headline since FINDINGS section 11.
+Run after `python -m src.model.two_stage` and `python -m src.model.verify_banded`;
+needs matplotlib.
 """
 import json, matplotlib
 matplotlib.use("Agg")
@@ -9,7 +13,8 @@ r = json.load(open("data/processed/two_stage.json"))
 B = [x["budget"] for x in r["results"]]
 epss = [x["epss_hits"] for x in r["results"]]
 gate = [x["gated_hits_seed_mean"] for x in r["results"]]
-band = [x["banded_hits_seed_mean"] for x in r["banded"]["results"]]
+v = json.load(open("data/processed/verify_banded.json"))["ablation"]["banded, model: no CPE-derived"]
+band = [v["hits"][str(b)] for b in B]
 SURF, INK, INK2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e6e5e0"
 plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 11})
 fig, ax = plt.subplots(figsize=(8, 4.8), dpi=200, facecolor=SURF)

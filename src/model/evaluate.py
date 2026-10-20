@@ -78,27 +78,33 @@ def score_ranker(name: str, y_true: np.ndarray, scores: np.ndarray) -> Result:
     )
 
 
-def build_matrices(train: pd.DataFrame, test: pd.DataFrame, use_epss: bool):
-    """Fit encoders on train only, then apply to test (no test-set fitting)."""
-    num = list(NUM_COLS) + (["epss_score"] if use_epss else [])
+def build_matrices(train: pd.DataFrame, test: pd.DataFrame, use_epss: bool,
+                   num_cols=None, cat_cols=None):
+    """Fit encoders on train only, then apply to test (no test-set fitting).
 
-    enc = OneHotEncoder(handle_unknown="ignore", min_frequency=30, sparse_output=True)
-    Xtr_cat = enc.fit_transform(train[CAT_COLS].fillna("NA").astype(str))
-    Xte_cat = enc.transform(test[CAT_COLS].fillna("NA").astype(str))
+    `num_cols` / `cat_cols` default to NUM_COLS / CAT_COLS; verify_banded.py
+    passes narrower sets for its feature ablations.
+    """
+    num = list(NUM_COLS if num_cols is None else num_cols) + (["epss_score"] if use_epss else [])
+    cats = list(CAT_COLS if cat_cols is None else cat_cols)
+    blocks_tr, blocks_te, names = [], [], list(num)
+
+    if num:
+        blocks_tr.append(csr_matrix(train[num].astype(float).fillna(-1).values))
+        blocks_te.append(csr_matrix(test[num].astype(float).fillna(-1).values))
+    if cats:
+        enc = OneHotEncoder(handle_unknown="ignore", min_frequency=30, sparse_output=True)
+        blocks_tr.append(enc.fit_transform(train[cats].fillna("NA").astype(str)))
+        blocks_te.append(enc.transform(test[cats].fillna("NA").astype(str)))
+        names += list(enc.get_feature_names_out(cats))
 
     tfidf = TfidfVectorizer(max_features=3000, ngram_range=(1, 2),
                             min_df=5, stop_words="english", sublinear_tf=True)
-    Xtr_txt = tfidf.fit_transform(train["description"].fillna(""))
-    Xte_txt = tfidf.transform(test["description"].fillna(""))
+    blocks_tr.append(tfidf.fit_transform(train["description"].fillna("")))
+    blocks_te.append(tfidf.transform(test["description"].fillna("")))
+    names += [f"tfidf::{t}" for t in tfidf.get_feature_names_out()]
 
-    Xtr_num = csr_matrix(train[num].astype(float).fillna(-1).values)
-    Xte_num = csr_matrix(test[num].astype(float).fillna(-1).values)
-
-    Xtr = hstack([Xtr_num, Xtr_cat, Xtr_txt]).tocsr()
-    Xte = hstack([Xte_num, Xte_cat, Xte_txt]).tocsr()
-    names = num + list(enc.get_feature_names_out(CAT_COLS)) + \
-        [f"tfidf::{t}" for t in tfidf.get_feature_names_out()]
-    return Xtr, Xte, names
+    return hstack(blocks_tr).tocsr(), hstack(blocks_te).tocsr(), names
 
 
 def fit_xgb(Xtr, ytr, seed: int = 42) -> XGBClassifier:

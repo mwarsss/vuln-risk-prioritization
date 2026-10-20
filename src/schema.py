@@ -34,6 +34,11 @@ class Timing(str, Enum):
     # Recomputed continuously upstream. Only valid from a dated snapshot;
     # reading the current value into a historical row leaks the outcome.
     POINT_IN_TIME = "point_in_time"
+    # Filled in by NVD analysis after publication, and no dated history of it
+    # is pulled. Not knowable at publication + 1 day, and in 2024-25 its very
+    # presence tracks the label (NVD analysed KEV CVEs first). Excluded from
+    # PIT_SAFE_FEATURES; see FINDINGS section 11.
+    ENRICHED = "enriched"
     # The prediction target.
     LABEL = "label"
     # Identifier / bookkeeping, not fed to the model.
@@ -106,11 +111,15 @@ SCHEMA: tuple[Column, ...] = (
            "First CWE identifier assigned."),
     Column("n_cwe", "int16", Role.NUMERIC, Timing.PIT_SAFE, "NVD",
            "Count of CWEs assigned.", bounds=(0, 100)),
-    Column("vendor", "category", Role.CATEGORICAL, Timing.PIT_SAFE, "NVD",
+
+    # --- Parsed from NVD's CPE list, added during NVD analysis. ---
+    # UNKNOWN / 0 for 18.9% of non-KEV CVEs published in 2024 and 32.2% in
+    # 2025, against 0% of KEV CVEs: "unanalysed" is a label proxy.
+    Column("vendor", "category", Role.CATEGORICAL, Timing.ENRICHED, "NVD",
            "Primary affected vendor, parsed from CPE."),
-    Column("n_vendors", "int16", Role.NUMERIC, Timing.PIT_SAFE, "NVD",
+    Column("n_vendors", "int16", Role.NUMERIC, Timing.ENRICHED, "NVD",
            "Distinct vendors affected. Proxy for blast radius.", bounds=(0, 10_000)),
-    Column("n_cpe", "int32", Role.NUMERIC, Timing.PIT_SAFE, "NVD",
+    Column("n_cpe", "int32", Role.NUMERIC, Timing.ENRICHED, "NVD",
            "Count of affected product configurations.", bounds=(0, 100_000)),
 
     # --- Recomputed upstream. Snapshot-only. ---

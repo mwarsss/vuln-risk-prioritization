@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.schema import validate
+from src.schema import PIT_SAFE_FEATURES, validate
 
 
 def frame(**over) -> pd.DataFrame:
@@ -112,6 +112,19 @@ def test_require_pit_false_downgrades_errors_to_warnings():
     df = frame().drop(columns=["epss_as_of"])
     rep = validate(df, require_pit=False)
     assert rep.ok and rep.warnings
+
+
+def test_cpe_derived_columns_are_not_point_in_time_safe():
+    """NVD adds CPE data during analysis, after publication — FINDINGS section 11."""
+    for col in ("vendor", "n_vendors", "n_cpe"):
+        assert col not in PIT_SAFE_FEATURES, f"{col} is enrichment, not publication-time"
+
+
+def test_verification_model_uses_only_point_in_time_safe_features():
+    from src.model.verify_banded import FEATURE_SETS, PRIMARY
+    num, cat = FEATURE_SETS[PRIMARY]
+    leaked = (set(num) | set(cat)) - set(PIT_SAFE_FEATURES)
+    assert not leaked, f"headline model reads non-PIT features: {sorted(leaked)}"
 
 
 def main() -> int:

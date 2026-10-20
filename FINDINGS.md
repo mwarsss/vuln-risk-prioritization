@@ -487,6 +487,135 @@ The defensible claim: **keeping EPSS's coarse bands and letting a content-only
 model order inside them beats EPSS at every patch budget from 100 to 10,000 and
 as a global ranker (PR-AUC +38%), in all five seeds, with no tuned parameter.**
 
+> Section 11 re-tests this: one input was itself a leak, the headline model now
+> drops it, and the result holds on a window nothing here had touched.
+
+## 11. Verification: trying to break section 10
+
+Section 10 rests on one test window, the window its band edges were read from,
+and five seeds — which measure model noise, not sampling noise over 209
+positives. `src/model/verify_banded.py` runs six checks. Nothing in it selects
+anything; every variant is printed.
+
+### A third leak: NVD enrichment
+
+The content features come from a 2026 NVD mirror. `vendor`, `n_vendors` and
+`n_cpe` are parsed from the CPE list, which NVD adds *during analysis* — days to
+months after publication — and through its 2024 backlog NVD analysed KEV CVEs
+first. Unanalysed CVEs appear as `vendor = UNKNOWN`, `n_cpe = 0`:
+
+| published | not exploited, no CPE | exploited, no CPE |
+|---|---|---|
+| 2021–2023 | 0.0% | 0.0% |
+| 2024 | **18.9%** | 0.0% |
+| 2025 | **32.2%** | 0.0% |
+
+"Never analysed" means "not in KEV". Even where analysis happened, the CPE list
+is usually absent one day after publication. The schema called these columns
+`PIT_SAFE`; they are now `Timing.ENRICHED` and excluded from
+`PIT_SAFE_FEATURES`, with a test pinning it. CWE and CVSS show no comparable
+missingness gap (unknown-CWE 1.9–20% for exploited vs 4.4–14% for not).
+
+### Ablation — does the result need the leak?
+
+Original section 9-10 test set (54,290 CVEs, 209 exploited), 5 seeds:
+
+| ranker | 100 | 500 | 1,000 | 5,000 | 10,000 | PR-AUC |
+|---|---|---|---|---|---|---|
+| EPSS alone | 41 | 66 | 72 | 90 | 107 | 0.1753 |
+| banded, **CVSS** within band (no model) | 29 | 68 | 75 | 123 | 146 | 0.1414 |
+| banded, model: all features (§10) | 53.4 | 68.8 | 86.0 | 140.2 | 162.6 | 0.2421 |
+| **banded, model: no CPE-derived** | **52.0** | **69.6** | **92.8** | **140.2** | **162.8** | **0.2484** |
+| banded, model: description only | 52.4 | 71.0 | 88.8 | 124.6 | 138.8 | 0.2461 |
+
+**Removing the leaked inputs does not hurt; it helps slightly.** The CPE
+features were never carrying the result. The point-in-time-safe model is the
+headline from here on. The all-features row reproduces section 10 exactly.
+
+**The model is necessary.** Ordering within bands by CVSS — a free rule —
+loses to plain EPSS at shallow budgets (29 vs 41) and on PR-AUC. Description
+text alone gets most of the way at shallow budgets; structured fields add the
+deep-budget gain.
+
+### Paired bootstrap — sampling noise, not seed noise
+
+2,000 resamples of test CVEs, gain over EPSS:
+
+| budget | 100 | 200 | 500 | 1,000 | 2,000 | 5,000 | 10,000 | PR-AUC |
+|---|---|---|---|---|---|---|---|---|
+| gain | +11.3 | +12.4 | +3.6 | +21.3 | +27.1 | +51.1 | +56.0 | +0.074 |
+| 95% CI | [+2, +21] | [+3, +24] | [+0, +9] | [+12, +32] | [+14, +41] | [+34, +68] | [+38, +74] | [+0.047, +0.102] |
+
+Every interval excludes a loss. Budget 500 is the weak point: the interval
+touches zero and 5.1% of resamples show no gain.
+
+### Permutation null — is it the model, or the bands?
+
+Shuffle the content score inside each band (200 draws), keeping the bands:
+
+| budget | 100 | 200 | 500 | 1,000 | 2,000 | 5,000 | 10,000 |
+|---|---|---|---|---|---|---|---|
+| real | 51 | 66 | 70 | 93 | 111 | 141 | 164 |
+| shuffled (max of 200) | 33.7 (41) | 43.6 (50) | 66.2 (68) | 67.5 (72) | 70.2 (77) | 78.1 (86) | 91.4 (103) |
+| EPSS | 41 | 54 | 66 | 72 | 84 | 90 | 107 |
+
+Bands with a random within-band order do *worse* than EPSS. The real model beats
+every one of 200 shuffles at every budget. The gain is the model's.
+
+### Rolling origin and a fresh holdout
+
+Six consecutive windows, each trained only on CVEs published before it, 3 seeds
+each. Cells are hits, EPSS → banded:
+
+| test window | CVEs | expl. | 100 | 500 | 2,000 | PR-AUC |
+|---|---|---|---|---|---|---|
+| 2022 H2 | 12,708 | 50 | 3 → 13.7 | 11 → 20.3 | 22 → 29.0 | 0.034 → 0.055 |
+| 2023 H1 | 14,105 | 63 | 4 → 5.3 | 7 → 10.0 | 13 → 28.0 | 0.016 → 0.019 |
+| 2023 H2 | 14,701 | 72 | 17 → 30.0 | 31 → 43.3 | 40 → 57.7 | 0.185 → 0.302 |
+| 2024 H1 | 20,339 | 60 | 15 → 17.7 | 21 → 31.0 | 23 → 44.7 | 0.163 → 0.203 |
+| 2024 H2 | 19,282 | 77 | 21 → 22.0 | 26 → 33.0 | 27 → 49.3 | 0.208 → 0.282 |
+| **2025-01 → 08-06** | **26,862** | **116** | **12 → 17.3** | **28 → 39.7** | **58 → 69.7** | **0.073 → 0.113** |
+
+**18 of 18 window-seeds are at least as good as EPSS at every budget**, and
+PR-AUC improves in all six windows. The one tie is 2023 H2 at budget 250
+(30 vs 30).
+
+The last window is the real out-of-sample test. A 365-day label is mature
+through 2025-08-06 against the 2026-08-07 KEV pull. Band edges and
+hyperparameters were fixed long before 2025 was loaded. The decision to drop CPE
+features was made from the enrichment audit (which includes 2025's missingness
+rates, and shows the same gap in 2024) — never from any 2025 *ranking* result.
+No ranking on this window was computed before the policy was frozen. Its
+bootstrap:
+
+| budget | 100 | 250 | 500 | 1,000 | 2,000 | PR-AUC |
+|---|---|---|---|---|---|---|
+| gain | +5.6 | +6.6 | +11.0 | +5.9 | +11.6 | +0.041 |
+| 95% CI | [+2, +10] | [+0, +13] | [+2, +20] | **[−1, +14]** | [+3, +20] | [+0.016, +0.071] |
+
+PR-AUC +55% (0.073 → 0.113), interval clear of zero. At budget 1,000 the
+interval crosses zero (7.5% of resamples show no gain); that budget is not
+established on fresh data.
+
+### What remains unverified
+
+1. **Other NVD fields have no dated history here.** Descriptions, CVSS and CWE
+   are read from the same 2026 mirror. They show no missingness gap like CPE,
+   and description-only reaches the same PR-AUC, but post-publication edits
+   cannot be ruled out without NVD's change history. That is the next leak to
+   check.
+2. **EPSS changed under the fresh window.** FIRST released EPSS v4 in March
+   2025; the 2025 baseline is a different model from 2023-24. It is still the
+   score a team would actually have had, so the comparison is fair, but the
+   windows are not like-for-like with each other.
+3. **Small counts.** The fresh window holds 116 exploited CVEs. Gains of 5–12
+   hits at shallow budgets are real by the bootstrap, and small.
+
+The defensible claim, now: **ordering CVEs within EPSS bands by a content model
+built only from publication-time NVD data beats EPSS on PR-AUC in every one of
+six rolling windows, including a 2025 holdout untouched by any design decision
+(+55%), and at almost every budget with bootstrap intervals clear of zero.**
+
 ## Reproducing
 
 ```bash
@@ -494,10 +623,11 @@ python -m src.schema                  # print the data contract
 python -m src.model.evaluate          # original run (leaked EPSS)
 python -m src.model.evaluate_pit      # corrected run (fetches ~45 snapshots, cached)
 python -m src.model.verify            # split/seed/calibration checks
-python -m src.ingestion.prefetch_daily  # ~1,300 daily EPSS snapshots (~1.6 GB, once)
+python -m src.ingestion.prefetch_daily --end 2025-08-06  # ~1,530 daily EPSS snapshots (once)
 python -m src.model.blend             # rank-blend against EPSS (w chosen on validation)
 python -m src.model.complementarity   # per-subpopulation: where does content help?
 python -m src.model.two_stage         # gated + banded policies vs EPSS (sections 9-10)
+python -m src.model.verify_banded     # section 11: leak audit, ablation, bootstrap, null, rolling, 2025 holdout
 python -m src.model.verify_pit_lag    # snapshot-vs-KEV-listing contamination
 python -m tests.test_ranking          # ranking primitives
 python -m tests.test_schema_gate      # every leak the contract must refuse
