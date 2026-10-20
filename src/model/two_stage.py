@@ -32,6 +32,7 @@ import argparse
 import json
 
 import numpy as np
+from sklearn.metrics import average_precision_score
 
 from src.model.dataset import load_pit_frame, temporal_split
 from src.model.evaluate import build_matrices, fit_xgb
@@ -39,6 +40,17 @@ from src.model.evaluate import build_matrices, fit_xgb
 CUTOFFS = [0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.10]
 BUDGETS = [100, 200, 500, 1000, 2000, 5000, 10000]
 TIE_TRIALS = 20
+
+# Decade edges, the same bands complementarity.py reports. Fixed by policy, not
+# selected: section 7 showed validation at 63 positives can point exactly the
+# wrong way, so the banded policy is built to have nothing to tune.
+BAND_EDGES = (0.001, 0.01, 0.1)
+# Robustness only — every variant is reported, none is picked.
+BAND_VARIANTS = {
+    "decades": BAND_EDGES,
+    "half-decades": (0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3),
+    "two bands": (0.01,),
+}
 
 
 def tiebreak_score(epss: np.ndarray, content: np.ndarray) -> np.ndarray:
@@ -87,6 +99,31 @@ def gated_score(epss: np.ndarray, content: np.ndarray, cutoff: float) -> np.ndar
 
     out[above] = 1.0 + unit_rank(epss[above])
     out[~above] = unit_rank(content[~above])
+    return out
+
+
+def banded_score(epss: np.ndarray, content: np.ndarray,
+                 edges: tuple[float, ...] = BAND_EDGES) -> np.ndarray:
+    """EPSS picks the band, the content model orders inside it.
+
+    The gate keeps EPSS's ordering only above one cutoff and hands everything
+    else to the content model — which throws away the between-band separation
+    section 8 measured as EPSS's entire contribution (base rate 0.26% -> 10% ->
+    76% across bands), and is why the gate loses below a ~1,500 budget. This
+    keeps every band boundary and drops only the within-band order, where EPSS
+    runs at 0.9-3.3x lift and the content model at 1.2-12.8x.
+
+    Missing EPSS joins the bottom band rather than sinking below it. One day
+    after publication a missing score means "not scored yet", not "low risk",
+    and the content model ranks that population at 10.1x lift.
+    """
+    epss = np.nan_to_num(epss, nan=0.0)
+    band = np.searchsorted(np.asarray(edges), epss, side="right")
+    out = np.empty(len(epss), dtype=float)
+    for b in np.unique(band):
+        m = band == b
+        r = np.argsort(np.argsort(content[m], kind="stable"), kind="stable")
+        out[m] = b + r / m.sum()
     return out
 
 
@@ -212,6 +249,57 @@ def main() -> None:
               f"{wins:>4d}/{args.seeds} {r_e:>8.1%} {r_g:>9.1%}")
     print("=" * 116)
 
+    # --- banded: EPSS picks the band, content orders inside it ---
+    # No cutoff, no weight, nothing chosen on validation or test. Validation is
+    # still scored, as a check that the effect is not a property of this one
+    # test window — not to select anything.
+    print("\nbanded policy — EPSS decade band first, content model within band "
+          f"(edges {BAND_EDGES}, fixed):")
+    print("-" * 92)
+    print(f"{'budget':>8s} {'EPSS':>7s} {'gated':>7s} {'banded':>7s} {'delta':>7s} "
+          f"{'per-seed banded':>18s} {'>= EPSS':>8s} {'EPSS rec':>9s} {'banded rec':>11s}")
+    print("-" * 92)
+    banded_rows = []
+    for row in rows:
+        b, h_e = row["budget"], row["epss_hits"]
+        h_bd, r_bd = recall_at(ytest, banded_score(epss_test, pred_test), b)
+        seed_hits = [recall_at(ytest, banded_score(epss_test, p), b)[0] for p in preds_test]
+        not_worse = sum(h >= h_e for h in seed_hits)
+        better = sum(h > h_e for h in seed_hits)
+        banded_rows.append({"budget": b, "epss_hits": h_e, "banded_hits": h_bd,
+                            "banded_hits_per_seed": seed_hits,
+                            "banded_hits_seed_mean": float(np.mean(seed_hits)),
+                            "banded_hits_seed_sd": float(np.std(seed_hits)),
+                            "seeds_not_worse": not_worse, "seeds_better": better,
+                            "epss_recall": row["epss_recall"], "banded_recall": r_bd})
+        print(f"{b:>8,} {h_e:>7,} {row['gated_hits']:>7,} {h_bd:>7,} {h_bd - h_e:>+7,} "
+              f"{np.mean(seed_hits):>11.1f} ±{np.std(seed_hits):>4.1f} "
+              f"{not_worse:>4d}/{args.seeds} {row['epss_recall']:>8.1%} {r_bd:>10.1%}")
+    print("-" * 92)
+
+    # As a ranker, not just at fixed budgets — the metric the gate never moved.
+    ap_epss = average_precision_score(ytest, epss_only)
+    ap_seeds = [average_precision_score(ytest, banded_score(epss_test, p)) for p in preds_test]
+    ap_val_epss = average_precision_score(yval, np.nan_to_num(epss_val, nan=-1.0))
+    ap_val = [average_precision_score(yval, banded_score(epss_val, p)) for p in preds_val]
+    print(f"PR-AUC test: EPSS {ap_epss:.4f}  banded {np.mean(ap_seeds):.4f} "
+          f"± {np.std(ap_seeds):.4f}  ({sum(a > ap_epss for a in ap_seeds)}/{args.seeds} seeds better)")
+    print(f"PR-AUC val:  EPSS {ap_val_epss:.4f}  banded {np.mean(ap_val):.4f} "
+          f"± {np.std(ap_val):.4f}  ({sum(a > ap_val_epss for a in ap_val)}/{args.seeds} seeds better)")
+
+    # Band-edge sensitivity: if the result needs these exact edges it is not a
+    # result. All variants are reported; the policy stays on decades regardless.
+    print("\nband-edge sensitivity (seed-mean hits; reported, not selected):")
+    variants = {}
+    for name, edges in BAND_VARIANTS.items():
+        hits = {b: float(np.mean([recall_at(ytest, banded_score(epss_test, p, edges), b)[0]
+                                  for p in preds_test])) for b in BUDGETS}
+        ap_v = float(np.mean([average_precision_score(ytest, banded_score(epss_test, p, edges))
+                              for p in preds_test]))
+        variants[name] = {"edges": list(edges), "hits_seed_mean": hits, "pr_auc_seed_mean": ap_v}
+        print(f"  {name:<13s} PR-AUC {ap_v:.4f}  " +
+              "  ".join(f"{b:,}:{h:.1f}" for b, h in hits.items()))
+
     total_pos = int(ytest.sum())
     print(f"\n{total_pos} exploited CVEs in the test window. Columns are how many a team "
           f"patching\nthat many CVEs would have caught. 'rand-tie' is EPSS with ties "
@@ -230,6 +318,12 @@ def main() -> None:
             "tie_structure": tie_diag,
             "seeds": args.seeds, "tie_trials": TIE_TRIALS,
             "results": rows,
+            "banded": {"edges": list(BAND_EDGES), "results": banded_rows,
+                       "pr_auc_epss": float(ap_epss),
+                       "pr_auc_banded_per_seed": [float(a) for a in ap_seeds],
+                       "val_pr_auc_epss": float(ap_val_epss),
+                       "val_pr_auc_banded_per_seed": [float(a) for a in ap_val],
+                       "edge_variants": variants},
         }, f, indent=2)
     print(f"\nwrote {args.out}")
 

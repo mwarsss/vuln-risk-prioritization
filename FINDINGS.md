@@ -413,6 +413,80 @@ model should order its tail; past a ~1,500-CVE budget that recovers roughly 40
 additional exploited CVEs per 5,000 patched — 19 recall points — using only NVD
 metadata.** Not "beats EPSS", and not nothing.
 
+> Superseded by section 10, which removes all three limits above.
+
+## 10. Banded: keep EPSS's bands, let content order inside them
+
+Section 9's gate keeps EPSS's ordering only above one cutoff — validation chose
+0.1 at every budget up to 2,000, which protects **4 CVEs** — and hands the rest to
+the content model. That discards the between-band separation section 8 measured
+as EPSS's entire contribution (0.26% → 10.2% → 75.8% base rate across bands). The
+shallow-budget loss is that discard, not a weakness of the content model.
+
+`banded_score()` keeps every band boundary and drops only the within-band order,
+where section 8 shows EPSS at 0.89–3.32x lift and the content model at
+1.21–12.8x:
+
+    1. Assign each CVE to an EPSS decade band: [0.1, 1], [0.01, 0.1),
+       [0.001, 0.01), [0, 0.001). Unscored CVEs join the bottom band.
+    2. Higher band always outranks lower.
+    3. Within a band, order by the content model.
+
+**Nothing is selected.** No cutoff, no weight, no validation pick — the decade
+edges are the ones `complementarity.py` already reported. Sections 7 and 9 both
+failed at the selection step, so this policy is built to have no selection step.
+
+| budget | EPSS | gate (§9) | **banded** | per seed | ≥ EPSS | EPSS recall | banded recall |
+|---|---|---|---|---|---|---|---|
+| 100 | 41 | 13.0 | **54** | 53.4 ± 1.0 | 5/5 | 19.6% | **25.8%** |
+| 200 | 54 | 22.4 | **66** | 65.8 ± 0.4 | 5/5 | 25.8% | **31.6%** |
+| 500 | 66 | 45.0 | **69** | 68.8 ± 1.3 | 5/5 | 31.6% | **33.0%** |
+| 1,000 | 72 | 59.4 | **87** | 86.0 ± 1.8 | 5/5 | 34.4% | **41.6%** |
+| 2,000 | 84 | 93.0 | **107** | 107.2 ± 1.9 | 5/5 | 40.2% | **51.2%** |
+| 5,000 | 90 | 130.0 | **143** | 140.2 ± 1.0 | 5/5 | 43.1% | **68.4%** |
+| 10,000 | 107 | 158.4 | **167** | 162.6 ± 2.9 | 5/5 | 51.2% | **79.9%** |
+
+(Gate column is the five-seed mean, as in section 9; banded is the
+seed-averaged model, with per-seed spread alongside.)
+
+**It never loses to EPSS, at any budget, in any seed** — the crossover is gone.
+At the weekly-patch depth of 100, a team catches 53 exploited CVEs instead of 41.
+And it beats the gate everywhere, including where the gate was strongest.
+
+**It beats EPSS as a ranker.** PR-AUC **0.2421 ± 0.0008 vs 0.1753 (+38%)**, 5 of
+5 seeds — the metric sections 3, 7 and 9 could not move. It also exceeds the
+blend's test-selected optimum (0.2194, section 7) without looking at test. On
+the validation window, where nothing was tuned either, it wins 5 of 5 seeds
+(0.0193 vs 0.0161).
+
+### Checks
+
+- **Band edges.** Half-decade edges give PR-AUC 0.2224 and beat EPSS at every
+  budget too (48.0 at 100). Collapsing to two bands at 0.01 gives 0.1759 and
+  loses at shallow budgets (31.0 at 100) — the mechanism predicts exactly this:
+  the gain needs the head's band structure preserved. Every variant is reported
+  by `two_stage.py`; the policy stays on decades.
+- **Unscored CVEs.** 4,471 test CVEs (14 positive) have no EPSS one day after
+  publication. Ranking them last instead of in the bottom band (seed 0) leaves
+  budgets ≤1,000 unchanged and costs 7 hits at 5,000 and 11 at 10,000. Most of
+  the gain is the banding; cold-start placement adds to it at depth.
+- **Baseline unchanged.** EPSS and gate figures reproduce section 9 exactly.
+
+### What this is worth, stated carefully
+
+1. **The decade edges were not chosen blind.** They come from section 8's band
+   table, computed on this test window. They are the obvious edges, half-decades
+   also work, and validation agrees — but a fresh window is the proper test.
+2. **It is still a content model over NVD metadata.** EPSS decides which band;
+   this decides order inside it. It is a complement to EPSS, not a replacement,
+   and it inherits EPSS's band boundaries wholesale.
+3. **209 positives.** The 5,000-budget gain of +53 is 25 recall points, but the
+   whole test window holds 209 exploited CVEs.
+
+The defensible claim: **keeping EPSS's coarse bands and letting a content-only
+model order inside them beats EPSS at every patch budget from 100 to 10,000 and
+as a global ranker (PR-AUC +38%), in all five seeds, with no tuned parameter.**
+
 ## Reproducing
 
 ```bash
@@ -423,7 +497,7 @@ python -m src.model.verify            # split/seed/calibration checks
 python -m src.ingestion.prefetch_daily  # ~1,300 daily EPSS snapshots (~1.6 GB, once)
 python -m src.model.blend             # rank-blend against EPSS (w chosen on validation)
 python -m src.model.complementarity   # per-subpopulation: where does content help?
-python -m src.model.two_stage         # gated policy: EPSS first, content orders the rest
+python -m src.model.two_stage         # gated + banded policies vs EPSS (sections 9-10)
 python -m src.model.verify_pit_lag    # snapshot-vs-KEV-listing contamination
 python -m tests.test_ranking          # ranking primitives
 python -m tests.test_schema_gate      # every leak the contract must refuse

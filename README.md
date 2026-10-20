@@ -16,35 +16,31 @@ CISA KEV within 365 days of publication). CVEs published 2023-07 → 2024-12,
 | ranker | PR-AUC | P@100 |
 |---|---|---|
 | CVSS base score | 0.0120 | 0.050 |
-| **EPSS (point-in-time)** | **0.1753** | **0.410** |
+| EPSS (point-in-time) | 0.1753 | 0.410 |
 | XGB (no EPSS) | 0.0457 | — |
 | rank blend, weight chosen on validation | 0.0457 | 0.112 |
+| **banded: EPSS band, content orders within** | **0.2421 ± 0.0008** | **0.534** |
 
-**The model does not beat EPSS as a ranker.** Feeding EPSS in as a feature fails,
-and rank-blending fails too — though not for the reason previously recorded here.
-An honest sweep *does* have an interior optimum (w=0.05 scores 0.2194, +25% over
-EPSS alone), but validation picks w=1.0 in all five seeds, landing on the worst
-point of the curve. A useful blend weight exists and this protocol cannot find
-it; 63 validation positives are not enough. See §7.
+**EPSS picks the band, the content model orders inside it.** Read one day after
+publication, EPSS is a small, sharp instrument: its power is the separation
+*between* its score bands (base rate 0.26% → 10% → 76%), and it barely orders
+*within* them (0.89–3.32x lift). The content model is the mirror image, at up to
+12.8x lift inside a band. So keep every EPSS decade band (0.001 / 0.01 / 0.1)
+and let the content model order only inside each:
 
-**One thing does work: gate, don't mix.** Read one day after publication, EPSS is
-a small, sharp instrument — only 37 of 54,290 test CVEs score above 0.01, and
-80% of the exploited ones sit in the pile it scores below 0.01. It barely orders
-*within* its bands (0.89–3.32x lift); its power is the separation *between* them.
-The content model is the mirror image, at 12.8x lift inside the bottom band.
-Letting EPSS rank the head of the queue and a content model order its tail:
+| budget | EPSS | banded | seeds ≥ EPSS | recall |
+|---|---|---|---|---|
+| 100 | 41 | **53.4 ± 1.0** | 5/5 | 19.6% → 25.8% |
+| 1,000 | 72 | **86.0 ± 1.8** | 5/5 | 34.4% → 41.6% |
+| 5,000 | 90 | **140.2 ± 1.0** | 5/5 | 43.1% → 68.4% |
+| 10,000 | 107 | **162.6 ± 2.9** | 5/5 | 51.2% → 79.9% |
 
-| budget | EPSS | EPSS + content tail | |
-|---|---|---|---|
-| 100 | 41 | 13.0 ± 1.8 | far worse, 0/5 seeds |
-| 1,000 | 72 | 59.4 ± 2.9 | worse, 0/5 seeds |
-| 5,000 | 90 | **130.0 ± 1.7** | **+40, 5/5 seeds** |
-| 10,000 | 107 | **158.4 ± 3.8** | **+51, 5/5 seeds** |
+![Exploited CVEs caught at each patch budget: the banded policy is above EPSS alone at every budget from 100 to 10,000, while the old gate falls below EPSS until about 1,500.](./docs/banded-vs-epss.png)
 
-Past a ~1,500-CVE budget this recovers roughly **40 more exploited CVEs per
-5,000 patched** — recall 43.1% → 62.2% — using only NVD metadata. Below that
-crossover it is actively harmful. This is a backlog-sweep result, not a
-weekly-patch-cycle one. See [`FINDINGS.md`](./FINDINGS.md) §7–9.
+It beats EPSS at every budget from 100 to 10,000 and as a global ranker
+(PR-AUC +38%), in all five seeds, **with no tuned parameter** — the two earlier
+attempts both failed at the step where a weight or cutoff had to be picked from
+63 validation positives (§7, §9). See [`FINDINGS.md`](./FINDINGS.md) §7–10.
 
 ### Two leaks, both measured
 
@@ -83,7 +79,7 @@ src/
     verify_pit_lag.py   # measures snapshot-vs-KEV-listing contamination
     blend.py         # rank-blend vs EPSS; weight chosen on validation
     complementarity.py  # per-EPSS-band: where does content add signal?
-    two_stage.py     # gated policy — EPSS ranks the head, content the tail
+    two_stage.py     # gated + banded policies — EPSS band first, content within
   api/           # FastAPI inference endpoint with SHAP explanations
 data/
   raw/           # pulled API responses + cached EPSS snapshots, untouched
@@ -101,6 +97,7 @@ python -m src.ingestion.kev_client   # sanity-check CISA KEV feed
 python -m src.ingestion.epss_client  # sanity-check FIRST EPSS API
 
 python -m src.ingestion.prefetch_daily   # ~1,300 daily EPSS snapshots (~1.6 GB, once)
-python -m src.model.two_stage            # the gated-policy result
+python -m src.model.two_stage            # gated + banded policy results
+python -m src.model.plot_two_stage       # docs/banded-vs-epss.png (needs matplotlib)
 python -m tests.test_ranking && python -m tests.test_schema_gate
 ```

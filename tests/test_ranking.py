@@ -13,7 +13,8 @@ from __future__ import annotations
 import numpy as np
 
 from src.model.blend import pct_rank
-from src.model.two_stage import gated_score, random_tiebreak_score, recall_at, tiebreak_score
+from src.model.two_stage import (banded_score, gated_score, random_tiebreak_score, recall_at,
+                                  tiebreak_score)
 
 
 def order_of(scores: np.ndarray) -> list[int]:
@@ -50,6 +51,45 @@ def test_missing_epss_falls_below_the_gate():
     content = np.array([0.99, 0.01])
     s = gated_score(epss, content, cutoff=0.05)
     assert order_of(s) == [1, 0], "absent EPSS is no evidence, not high risk"
+
+
+# --- banded_score: EPSS picks the band, content orders inside it -------------
+
+def test_banded_never_lets_a_lower_band_outrank_a_higher_one():
+    """The between-band sort is EPSS's whole contribution; the gate destroyed it."""
+    epss = np.array([0.0005, 0.005, 0.05, 0.5])
+    content = np.array([0.99, 0.98, 0.97, 0.01])  # content wants the reverse
+    s = banded_score(epss, content)
+    assert order_of(s) == [3, 2, 1, 0]
+
+
+def test_banded_orders_within_a_band_by_content_not_epss():
+    epss = np.array([0.009, 0.002, 0.005])  # all in [0.001, 0.01)
+    content = np.array([0.10, 0.90, 0.50])
+    s = banded_score(epss, content)
+    assert order_of(s) == [1, 2, 0]
+
+
+def test_banded_keeps_the_middle_bands_the_gate_discarded():
+    """Regression for the shallow-budget loss: with the gate at 0.1, a CVE at
+    EPSS 0.05 competes with the discard pile on content score alone."""
+    epss = np.array([0.05, 0.0001])
+    content = np.array([0.01, 0.99])
+    assert order_of(gated_score(epss, content, cutoff=0.1)) == [1, 0]
+    assert order_of(banded_score(epss, content)) == [0, 1]
+
+
+def test_banded_puts_missing_epss_in_the_bottom_band_not_below_it():
+    epss = np.array([np.nan, 0.0002, 0.02])
+    content = np.array([0.9, 0.1, 0.0])
+    s = banded_score(epss, content)
+    assert order_of(s) == [2, 0, 1], "unscored is 'not yet', not 'lowest'"
+
+
+def test_banded_edge_value_belongs_to_the_upper_band():
+    epss = np.array([0.01, 0.0099])
+    content = np.array([0.0, 1.0])
+    assert order_of(banded_score(epss, content)) == [0, 1]
 
 
 # --- tiebreak_score: EPSS ordering preserved exactly -------------------------
