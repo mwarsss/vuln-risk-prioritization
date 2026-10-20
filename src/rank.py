@@ -101,9 +101,21 @@ def main() -> None:
         ranked.to_csv(args.csv, index=False)
         print(f"wrote {args.csv}")
     show = ranked.head(args.top) if args.top else ranked
-    with pd.option_context("display.max_colwidth", 40, "display.width", 140):
-        print(show[["rank", "cve_id", "band", "epss", "model_score", "base_score", "note"]]
-              .to_string(index=False, float_format=lambda v: f"{v:.4f}"))
+    fmt = {"epss": "{:.4f}", "model_score": "{:.3f}", "base_score": "{:.1f}"}
+    table = show[["rank", "cve_id", "band", "epss", "model_score", "base_score", "note"]].copy()
+    for col, f in fmt.items():
+        table[col] = [f.format(v) if pd.notna(v) else "—" for v in table[col]]
+    table = table.rename(columns={"model_score": "model", "base_score": "cvss"}).astype(str)
+    right = {"rank", "epss", "model", "cvss"}
+    widths = {c: max(len(c), *(len(v) for v in table[c])) for c in table.columns}
+
+    def line(cells):
+        return "  ".join(v.rjust(widths[c]) if c in right else v.ljust(widths[c])
+                         for c, v in zip(table.columns, cells)).rstrip()
+
+    print(line(table.columns))
+    for row in table.itertuples(index=False):
+        print(line(row))
 
 
 if __name__ == "__main__":
