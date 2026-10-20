@@ -79,6 +79,20 @@ from NVD's CPE list, added during NVD analysis after publication. Through the
 analysed" meant "not in KEV". The schema now marks these `ENRICHED`, not
 point-in-time-safe, and the headline model excludes them (§11).
 
+## Using it
+
+```bash
+python -m src.model.train        # fit the verified model → models/banded.joblib (~135k CVEs)
+python -m src.rank CVE-2024-3400 CVE-2023-4966 CVE-2024-1086
+python -m src.rank --file scan_cves.txt --top 50 --csv ranked.csv
+uvicorn src.api.main:app         # POST /rank {"cve_ids": [...]}, GET /health
+```
+
+Each CVE gets today's EPSS and its NVD record (description, CVSS, CWE — never
+CPE). EPSS sets the band; the model orders within it. CVEs with no EPSS yet join
+the bottom band; CVEs NVD does not know rank last in their band and are flagged.
+NVD's public limit is 5 requests / 30 s — set `NVD_API_KEY` for large scans.
+
 ## Architecture
 
 ![Three data sources join on CVE ID into a feature table that trains a calibrated XGBoost classifier; the model serves probability and SHAP explanations via FastAPI and a Svelte UI, with a drift monitor triggering retraining.](./docs/architecture.svg)
@@ -93,6 +107,7 @@ src/
     prefetch_daily.py   # warms the ~1,300-file daily snapshot cache
   features/      # joins the three sources into a training table
   model/
+    train.py         # fits the deployable model bundle (encoders + 5 seeds)
     dataset.py       # THE validated loader — attaches dated EPSS, runs schema.validate
     evaluate.py      # original temporal evaluation (deliberately leaked baseline)
     evaluate_pit.py  # point-in-time re-evaluation
@@ -102,7 +117,8 @@ src/
     complementarity.py  # per-EPSS-band: where does content add signal?
     two_stage.py     # gated + banded policies — EPSS band first, content within
     verify_banded.py # leak audit, ablation, bootstrap, permutation null, rolling + 2025 holdout
-  api/           # FastAPI inference endpoint with SHAP explanations
+  api/           # FastAPI /rank endpoint over src/rank.py
+rank.py          # CVE IDs → banded patch ranking (CLI + function)
 data/
   raw/           # pulled API responses + cached EPSS snapshots, untouched
   processed/     # joined feature tables (parquet)

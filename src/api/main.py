@@ -1,30 +1,48 @@
-"""FastAPI inference endpoint: raw scan telemetry in, calibrated exploit probability + SHAP explanation out."""
-import joblib
-import shap
-from fastapi import FastAPI
-from pydantic import BaseModel
+"""FastAPI endpoint: CVE IDs in, banded patch ranking out.
+
+    uvicorn src.api.main:app
+    curl -X POST localhost:8000/rank -H 'content-type: application/json' \\
+         -d '{"cve_ids": ["CVE-2024-3400", "CVE-2023-4966"]}'
+
+Replaces the scaffold, which loaded a CVSS+EPSS model trained on a random split
+— the leak pattern this project spent sections 1-6 removing.
+"""
+from __future__ import annotations
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+from src.rank import load_bundle, rank_cves
 
 app = FastAPI(title="Vulnerability Risk Prioritization API")
-model = joblib.load("model.joblib")
-explainer = shap.Explainer(model.predict_proba, feature_names=["cvss_base_score", "epss_score"])
+bundle = load_bundle()
+MAX_IDS = 200  # NVD is fetched per CVE; larger scans belong in the CLI
 
 
-class ScanFinding(BaseModel):
+class RankRequest(BaseModel):
+    cve_ids: list[str] = Field(min_length=1)
+
+
+class RankedCVE(BaseModel):
+    rank: int
     cve_id: str
-    cvss_base_score: float | None = None
-    epss_score: float | None = None
+    band: str
+    epss: float | None
+    model_score: float | None
+    base_score: float | None
+    note: str
 
 
-class RiskResponse(BaseModel):
-    cve_id: str
-    exploit_probability: float
-    shap_contributions: dict[str, float]
+@app.get("/health")
+def health() -> dict:
+    return {"trained_through": bundle["trained_through"], "n_train": bundle["n_train"]}
 
 
-@app.post("/score", response_model=RiskResponse)
-def score(finding: ScanFinding) -> RiskResponse:
-    features = [[finding.cvss_base_score or -1, finding.epss_score or -1]]
-    probability = float(model.predict_proba(features)[0][1])
-    shap_values = explainer(features)
-    contributions = dict(zip(explainer.feature_names, shap_values.values[0][:, 1]))
-    return RiskResponse(cve_id=finding.cve_id, exploit_probability=probability, shap_contributions=contributions)
+@app.post("/rank", response_model=list[RankedCVE])
+def rank(req: RankRequest) -> list[RankedCVE]:
+    if len(req.cve_ids) > MAX_IDS:
+        raise HTTPException(413, f"at most {MAX_IDS} CVE IDs per request; use `python -m src.rank`")
+    df = rank_cves(req.cve_ids, bundle, verbose=False)
+    cols = ["rank", "cve_id", "band", "epss", "model_score", "base_score", "note"]
+    records = df[cols].astype(object).where(df[cols].notna(), None).to_dict("records")
+    return [RankedCVE(**r) for r in records]

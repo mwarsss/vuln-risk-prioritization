@@ -1,37 +1,67 @@
-"""Train a calibrated XGBoost classifier, optimized for PR-AUC on an imbalanced target."""
+"""Fit the deployable content model behind the banded ranker.
+
+Exactly the configuration FINDINGS section 11 verified: point-in-time-safe NVD
+features only (no CPE-derived columns), the same XGBoost settings, and the mean
+of five seeds. Trained on every CVE whose 365-day label is mature, through the
+validated loader — so the schema gate runs and rows CISA listed within a day of
+publication are dropped, as in evaluation.
+
+The bundle holds the fitted encoders with the models: a live CVE must be encoded
+by the vocabulary the model was trained on, not one refitted at scoring time.
+"""
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+from pathlib import Path
+
 import joblib
-import pandas as pd
-from sklearn.model_selection import StratifiedKFold, cross_val_score
-from sklearn.calibration import CalibratedClassifierCV
-from xgboost import XGBClassifier
+import numpy as np
 
-FEATURE_COLS = ["cvss_base_score", "epss_score"]  # extend with encoded categoricals + NLP embeddings
-TARGET_COL = "is_kev"
+from src.model.dataset import load_pit_frame
+from src.model.evaluate import Featurizer, fit_xgb
+from src.model.two_stage import BAND_EDGES
+from src.model.verify_banded import FEATURE_SETS, FRESH_END, PRIMARY
+
+MODEL_PATH = Path("models/banded.joblib")
 
 
-def train(df: pd.DataFrame, model_path: str = "model.joblib") -> XGBClassifier:
-    X = df[FEATURE_COLS].fillna(-1)
-    y = df[TARGET_COL].astype(int)
+def train(end: str = FRESH_END, seeds: int = 5, out: Path = MODEL_PATH) -> dict:
+    df = load_pit_frame(365, end)
+    num, cat = FEATURE_SETS[PRIMARY]
+    feat = Featurizer(num, cat)
+    X = feat.fit_transform(df)
+    y = df["is_kev"].values
+    print(f"training on {len(df):,} CVEs ({int(y.sum())} exploited within 365 days), "
+          f"published {df['published_date'].min().date()} → {df['published_date'].max().date()}")
+    models = [fit_xgb(X, y, seed=s) for s in range(seeds)]
 
-    base_model = XGBClassifier(
-        n_estimators=300,
-        max_depth=5,
-        learning_rate=0.05,
-        scale_pos_weight=(y == 0).sum() / max((y == 1).sum(), 1),  # counter the <5% positive-class imbalance
-        eval_metric="aucpr",
-        random_state=42,
-    )
+    bundle = {
+        "featurizer": feat,
+        "models": models,
+        "band_edges": BAND_EDGES,
+        "features": {"numeric": list(num), "categorical": list(cat), "text": "description"},
+        "trained_through": end,
+        "n_train": len(df),
+        "n_positive": int(y.sum()),
+        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    out.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(bundle, out)
+    in_sample = np.mean([m.predict_proba(X)[:, 1] for m in models], axis=0)
+    print(f"wrote {out} — mean in-sample score {in_sample[y].mean():.3f} exploited vs "
+          f"{in_sample[~y].mean():.3f} not (sanity only; see FINDINGS §11 for real performance)")
+    return bundle
 
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    scores = cross_val_score(base_model, X, y, cv=skf, scoring="average_precision")
-    print(f"5-fold PR-AUC: {scores.mean():.4f} +/- {scores.std():.4f}")
 
-    calibrated = CalibratedClassifierCV(base_model, method="isotonic", cv=skf)
-    calibrated.fit(X, y)
-    joblib.dump(calibrated, model_path)
-    return calibrated
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--end", default=FRESH_END, help="last publication date with a mature label")
+    ap.add_argument("--seeds", type=int, default=5)
+    ap.add_argument("--out", type=Path, default=MODEL_PATH)
+    args = ap.parse_args()
+    train(args.end, args.seeds, args.out)
 
 
 if __name__ == "__main__":
-    df = pd.read_parquet("data/processed/features.parquet")
-    train(df)
+    main()

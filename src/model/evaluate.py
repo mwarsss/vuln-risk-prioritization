@@ -78,6 +78,51 @@ def score_ranker(name: str, y_true: np.ndarray, scores: np.ndarray) -> Result:
     )
 
 
+class Featurizer:
+    """Numeric + one-hot + TF-IDF encoding, fitted once and reusable.
+
+    Split out of build_matrices so the trained encoders can be saved alongside
+    the model (train.py) and applied to live CVEs (rank.py) exactly as in
+    evaluation.
+    """
+
+    def __init__(self, num_cols, cat_cols):
+        self.num, self.cats = list(num_cols), list(cat_cols)
+
+    def fit(self, df: pd.DataFrame) -> "Featurizer":
+        self.fit_transform(df)
+        return self
+
+    def fit_transform(self, df: pd.DataFrame):
+        # fit_transform, not fit-then-transform: TF-IDF rounds the two paths
+        # differently in the last bit, and published numbers come from this one.
+        blocks = []
+        if self.num:
+            blocks.append(csr_matrix(df[self.num].astype(float).fillna(-1).values))
+        if self.cats:
+            self.enc = OneHotEncoder(handle_unknown="ignore", min_frequency=30, sparse_output=True)
+            blocks.append(self.enc.fit_transform(df[self.cats].fillna("NA").astype(str)))
+        self.tfidf = TfidfVectorizer(max_features=3000, ngram_range=(1, 2),
+                                     min_df=5, stop_words="english", sublinear_tf=True)
+        blocks.append(self.tfidf.fit_transform(df["description"].fillna("")))
+        return hstack(blocks).tocsr()
+
+    def transform(self, df: pd.DataFrame):
+        blocks = []
+        if self.num:
+            blocks.append(csr_matrix(df[self.num].astype(float).fillna(-1).values))
+        if self.cats:
+            blocks.append(self.enc.transform(df[self.cats].fillna("NA").astype(str)))
+        blocks.append(self.tfidf.transform(df["description"].fillna("")))
+        return hstack(blocks).tocsr()
+
+    def names(self) -> list[str]:
+        out = list(self.num)
+        if self.cats:
+            out += list(self.enc.get_feature_names_out(self.cats))
+        return out + [f"tfidf::{t}" for t in self.tfidf.get_feature_names_out()]
+
+
 def build_matrices(train: pd.DataFrame, test: pd.DataFrame, use_epss: bool,
                    num_cols=None, cat_cols=None):
     """Fit encoders on train only, then apply to test (no test-set fitting).
@@ -87,24 +132,9 @@ def build_matrices(train: pd.DataFrame, test: pd.DataFrame, use_epss: bool,
     """
     num = list(NUM_COLS if num_cols is None else num_cols) + (["epss_score"] if use_epss else [])
     cats = list(CAT_COLS if cat_cols is None else cat_cols)
-    blocks_tr, blocks_te, names = [], [], list(num)
-
-    if num:
-        blocks_tr.append(csr_matrix(train[num].astype(float).fillna(-1).values))
-        blocks_te.append(csr_matrix(test[num].astype(float).fillna(-1).values))
-    if cats:
-        enc = OneHotEncoder(handle_unknown="ignore", min_frequency=30, sparse_output=True)
-        blocks_tr.append(enc.fit_transform(train[cats].fillna("NA").astype(str)))
-        blocks_te.append(enc.transform(test[cats].fillna("NA").astype(str)))
-        names += list(enc.get_feature_names_out(cats))
-
-    tfidf = TfidfVectorizer(max_features=3000, ngram_range=(1, 2),
-                            min_df=5, stop_words="english", sublinear_tf=True)
-    blocks_tr.append(tfidf.fit_transform(train["description"].fillna("")))
-    blocks_te.append(tfidf.transform(test["description"].fillna("")))
-    names += [f"tfidf::{t}" for t in tfidf.get_feature_names_out()]
-
-    return hstack(blocks_tr).tocsr(), hstack(blocks_te).tocsr(), names
+    f = Featurizer(num, cats)
+    Xtr = f.fit_transform(train)
+    return Xtr, f.transform(test), f.names()
 
 
 def fit_xgb(Xtr, ytr, seed: int = 42) -> XGBClassifier:
