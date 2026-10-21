@@ -127,6 +127,20 @@ def test_verification_model_uses_only_point_in_time_safe_features():
     assert not leaked, f"headline model reads non-PIT features: {sorted(leaked)}"
 
 
+def test_exploit_events_after_the_as_of_date_are_never_counted():
+    from src.features.exploit_features import attach_exploit_features
+    cves = pd.DataFrame({"cve_id": ["CVE-1", "CVE-2"],
+                         "published_date": ["2024-03-01T10:00:00", "2024-03-01T10:00:00"]})
+    events = pd.DataFrame({"cve_id": ["CVE-1", "CVE-1", "CVE-2"],
+                           "source": ["github", "github", "edb"],
+                           "date": pd.to_datetime(["2024-03-02", "2024-03-03", "2024-02-01"])})
+    out = attach_exploit_features(cves, events).set_index("cve_id")
+    assert out.loc["CVE-1", "github_pocs"] == 1, "only the PoC by publication + 1 day counts"
+    assert out.loc["CVE-2", "edb_exploits"] == 1 and out.loc["CVE-2", "any_exploit"] == 1
+    later = attach_exploit_features(cves, events, as_of_date=pd.Timestamp("2024-06-01"))
+    assert later.set_index("cve_id").loc["CVE-1", "github_pocs"] == 2
+
+
 def main() -> int:
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

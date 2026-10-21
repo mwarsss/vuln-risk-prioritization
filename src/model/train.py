@@ -1,7 +1,7 @@
-"""Fit the deployable content model behind the banded ranker.
+"""Fit TriageBand's content model.
 
-Exactly the configuration FINDINGS section 11 verified: point-in-time-safe NVD
-features only (no CPE-derived columns), the same XGBoost settings, and the mean
+The configuration FINDINGS section 12 chose (variant V3): point-in-time-safe NVD
+features (no CPE-derived columns) plus dated exploit-availability counts, the same XGBoost settings, and the mean
 of five seeds. Trained on every CVE whose 365-day label is mature, through the
 validated loader — so the schema gate runs and rows CISA listed within a day of
 publication are dropped, as in evaluation.
@@ -18,6 +18,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 
+from src.features.exploit_features import EXPLOIT_COLS, attach_exploit_features, load_events
 from src.model.dataset import load_pit_frame
 from src.model.evaluate import Featurizer, fit_xgb
 from src.model.two_stage import BAND_EDGES
@@ -27,8 +28,9 @@ MODEL_PATH = Path("models/banded.joblib")
 
 
 def train(end: str = FRESH_END, seeds: int = 5, out: Path = MODEL_PATH) -> dict:
-    df = load_pit_frame(365, end)
+    df = attach_exploit_features(load_pit_frame(365, end), load_events())
     num, cat = FEATURE_SETS[PRIMARY]
+    num = list(num) + list(EXPLOIT_COLS)
     feat = Featurizer(num, cat)
     X = feat.fit_transform(df)
     y = df["is_kev"].values

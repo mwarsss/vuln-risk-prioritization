@@ -1,64 +1,59 @@
-# AI-Assisted Vulnerability Risk Prioritization
+# TriageBand
 
-Predictive probability model for vulnerability triage — replaces static CVSS severity heuristics with a calibrated `P(Exploit | Features)` estimate.
+**Patch the vulnerabilities attackers will actually use, first.** TriageBand
+ranks CVEs for remediation by keeping EPSS's risk bands and ordering the CVEs
+inside each band with a gradient-boosted model trained only on what is known the
+day after a CVE is published — its NVD description, CVSS vector, weakness type,
+and whether public exploit code has appeared. Every ranked CVE comes with the
+reasons behind its position.
 
-See [`PROJECT_PLAN.md`](./PROJECT_PLAN.md) for the problem statement, architecture, and roadmap, and [`DATA_SOURCES.md`](./DATA_SOURCES.md) for the three data sources (NVD, CISA KEV, FIRST EPSS) and how they join.
+New to the field? Start with [`BACKGROUND.md`](./BACKGROUND.md): the problem,
+why it matters, and every term used here.
 
-## Current result
+## Result
 
-Read [`FINDINGS.md`](./FINDINGS.md) before quoting any number from this repo.
+Tested on CVEs published January–August 2025 — a period no modelling decision
+was based on — with the model trained only on earlier CVEs. 26,862 CVEs, 116
+exploited within a year (CISA KEV). Effort is the share of all CVEs patched;
+coverage the share of exploited CVEs caught; efficiency the share of patches
+that were exploited.
 
-Evaluated point-in-time — EPSS read from the dated archive snapshot for
-publication + 1 day, never a current pull — against a bounded target (added to
-CISA KEV within 365 days of publication). CVEs published 2023-07 → 2024-12,
-54,290 rows, 209 positives, base rate 0.385%.
-
-| ranker | PR-AUC | P@100 |
-|---|---|---|
-| CVSS base score | 0.0120 | 0.050 |
-| EPSS (point-in-time) | 0.1753 | 0.410 |
-| XGB (no EPSS) | 0.0457 | — |
-| rank blend, weight chosen on validation | 0.0457 | 0.112 |
-| **banded: EPSS band, content orders within** | **0.2484 ± 0.0017** | **0.520** |
-
-**EPSS picks the band, the content model orders inside it.** Read one day after
-publication, EPSS is a small, sharp instrument: its power is the separation
-*between* its score bands (base rate 0.26% → 10% → 76%), and it barely orders
-*within* them (0.89–3.32x lift). The content model is the mirror image, at up to
-12.8x lift inside a band. So keep every EPSS decade band (0.001 / 0.01 / 0.1)
-and let the content model order only inside each:
-
-| budget | EPSS | banded | gain, 95% bootstrap CI | recall |
+| effort | CVEs patched | EPSS catches | **TriageBand catches** | efficiency, EPSS → TriageBand |
 |---|---|---|---|---|
-| 100 | 41 | **52.0** | +11 [+2, +21] | 19.6% → 24.9% |
-| 1,000 | 72 | **92.8** | +21 [+12, +32] | 34.4% → 44.4% |
-| 5,000 | 90 | **140.2** | +51 [+34, +68] | 43.1% → 67.1% |
-| 10,000 | 107 | **162.8** | +56 [+38, +74] | 51.2% → 77.9% |
+| 1% | 269 | 23 (20%) | **34 (29%)** | 8.6% → 12.6% |
+| 2% | 537 | 29 (25%) | **43 (37%)** | 5.4% → 8.0% |
+| 5% | 1,343 | 46 (40%) | **50 (43%)** | 3.4% → 3.7% |
+| 10% | 2,686 | 62 (53%) | **87 (75%)** | 2.3% → 3.2% |
 
-The content model here uses only fields fixed at publication. The CPE-derived
-features (`vendor`, `n_vendors`, `n_cpe`) turned out to be a third leak — NVD
-adds them during analysis, and through its 2024-25 backlog analysed KEV CVEs
-first — so they are excluded (§11). Dropping them did not lower the result.
+**To catch half of the exploited CVEs, TriageBand needs 1,564 patches; EPSS
+alone needs 1,907 — 18% less work.** The same holds across all six 6-month
+windows from 2022 to 2025:
 
-![Exploited CVEs caught at each patch budget: the banded policy is above EPSS alone at every budget from 100 to 10,000, while the old gate falls below EPSS until about 1,500.](./docs/banded-vs-epss.png)
+![Share of exploited CVEs caught at 1–5% effort, by six-month period: TriageBand is above EPSS alone in all six, by 5 to 24 points, and by 8 points on the 2025 holdout.](./docs/rolling-windows.png)
 
-It beats EPSS at every budget from 100 to 10,000 and as a global ranker
-(PR-AUC +42%), **with no tuned parameter** — the two earlier attempts both failed
-at the step where a weight or cutoff had to be picked from 63 validation
-positives (§7, §9).
+TriageBand complements EPSS rather than replacing it: EPSS decides the band.
+Details, every variant tried, and what did not work are in
+[`FINDINGS.md`](./FINDINGS.md) §10–12.
 
-**Verified out of sample** (`python -m src.model.verify_banded`, §11): across six
-rolling 6-month windows, each trained only on earlier CVEs, it matches or beats
-EPSS at every budget in 18/18 window-seeds and improves PR-AUC in all six. On a
-2025 holdout no design decision was made from, PR-AUC rises 0.073 → 0.113
-(+55%, 95% CI of gain [+0.016, +0.071]). Shuffling the model's scores within
-bands drops it below EPSS, so the gain is the model's, not the bands'. Ordering
-within bands by CVSS instead loses to EPSS, so the model is needed. See
-[`FINDINGS.md`](./FINDINGS.md) §7–11.
+## How it works
 
-![PR-AUC by six-month test period: the banded method is above EPSS alone in all six, from +17% to +63%, and +55% on the 2025 holdout.](./docs/rolling-windows.png)
+![Illustration of four EPSS bands as rows of dots. With EPSS alone, exploited bugs are scattered across each row; with the band plus model, the same exploited bugs move to the front of every row.](./docs/method-banded.png)
 
-### Three leaks, all measured
+1. **EPSS picks the band** — decade bands at 0.001, 0.01 and 0.1. A higher band
+   always comes first. EPSS is excellent at this: the exploited rate climbs from
+   0.26% to 10% to 76% across bands.
+2. **The model picks the order inside each band**, where EPSS's own ordering is
+   close to random. Inputs: NVD description (TF-IDF), CVSS vector, CWE, and
+   GitHub / Exploit-DB / Metasploit exploit counts, all as of publication + 1 day.
+3. **Nothing is tuned on scarce data.** The band edges are fixed; the model is an
+   XGBoost ensemble of five seeds.
+4. **Every CVE is explained** — the three strongest present reasons from exact
+   per-CVE SHAP values, e.g. *description mentions "unauthenticated"; CVSS base
+   score 10.0*.
+
+## How the evaluation stays honest
+
+Four mistakes would each have inflated the result; all are measured and closed.
 
 An early run reported 0.4176 PR-AUC, from EPSS scores pulled in 2026 for CVEs
 published in 2023-24 — after the exploitation they were predicting — against an
@@ -81,10 +76,14 @@ from NVD's CPE list, added during NVD analysis after publication. Through the
 analysed" meant "not in KEV". The schema now marks these `ENRICHED`, not
 point-in-time-safe, and the headline model excludes them (§11).
 
+A fourth was avoided rather than found: counted from today's data, public
+exploit code exists for **53%** of exploited CVEs; counted as of the day after
+publication, as TriageBand does, it is **14%** (§12).
+
 ## Using it
 
 ```bash
-python -m src.model.train        # fit the verified model → models/banded.joblib (~135k CVEs)
+python -m src.model.train        # fit TriageBand → models/banded.joblib (~135k CVEs)
 python -m src.rank CVE-2024-3400 CVE-2023-4966 CVE-2024-1086
 python -m src.rank --file scan_cves.txt --top 50 --csv ranked.csv
 uvicorn src.api.main:app         # POST /rank {"cve_ids": [...]}, GET /health
@@ -96,6 +95,8 @@ Each CVE gets today's EPSS and its NVD record (description, CVSS, CWE — never
 CPE). EPSS sets the band; the model orders within it. CVEs with no EPSS yet join
 the bottom band; CVEs NVD does not know rank last in their band and are flagged.
 NVD's public limit is 5 requests / 30 s — set `NVD_API_KEY` for large scans.
+Exploit counts come from local copies of Exploit-DB and PoC-in-GitHub; download
+commands are at the top of `src/features/exploit_features.py`.
 
 ## Architecture
 
@@ -109,7 +110,8 @@ src/
   ingestion/     # NVD, CISA KEV, FIRST EPSS clients
     epss_history.py  # dated EPSS archive snapshots (the leakage fix)
     prefetch_daily.py   # warms the ~1,300-file daily snapshot cache
-  features/      # joins the three sources into a training table
+  features/      # joins the sources into a training table
+    exploit_features.py # Exploit-DB / PoC-in-GitHub counts as of a date
   model/
     train.py         # fits the deployable model bundle (encoders + 5 seeds)
     dataset.py       # THE validated loader — attaches dated EPSS, runs schema.validate
@@ -120,6 +122,9 @@ src/
     blend.py         # rank-blend vs EPSS; weight chosen on validation
     complementarity.py  # per-EPSS-band: where does content add signal?
     two_stage.py     # gated + banded policies — EPSS band first, content within
+    compare.py       # TriageBand variants on coverage / efficiency (§12)
+    metrics.py       # coverage, efficiency, effort-to-coverage, calibration
+    explain.py       # per-CVE reason codes from exact SHAP values
     verify_banded.py # leak audit, ablation, bootstrap, permutation null, rolling + 2025 holdout
   api/           # FastAPI /rank endpoint over src/rank.py
 rank.py          # CVE IDs → banded patch ranking (CLI + function)

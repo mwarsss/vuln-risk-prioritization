@@ -2,33 +2,30 @@ $ curl -s localhost:8000/health
 {"trained_through":"2025-08-06","n_train":135232}
 
 $ curl -s -X POST localhost:8000/rank -H 'content-type: application/json' \
-    -d '{"cve_ids": ["CVE-2024-6387", "CVE-2024-3400", "CVE-2099-99999"]}' | python -m json.tool --no-ensure-ascii
+    -d '{"cve_ids": ["CVE-2024-6387", "CVE-2099-99999"]}' | python -m json.tool --no-ensure-ascii
 [
   {
     "rank": 1,
-    "cve_id": "CVE-2024-3400",
-    "band": "EPSS ≥ 0.1",
-    "epss": 0.99999,
-    "model_score": 0.9850290417671204,
-    "base_score": 10.0,
-    "note": ""
-  },
-  {
-    "rank": 2,
     "cve_id": "CVE-2024-6387",
     "band": "EPSS ≥ 0.1",
     "epss": 0.99506,
-    "model_score": 0.5671402215957642,
+    "model_score": 0.9175336956977844,
     "base_score": 8.1,
-    "note": ""
+    "note": "",
+    "why": [
+      "95 public proof-of-concept repo(s) on GitHub",
+      "2 weakness type(s) listed",
+      "description mentions \"unauthenticated\""
+    ]
   },
   {
-    "rank": 3,
+    "rank": 2,
     "cve_id": "CVE-2099-99999",
     "band": "EPSS < 0.001",
     "epss": null,
     "model_score": null,
     "base_score": null,
-    "note": "not in NVD — ordered by EPSS band only"
+    "note": "not in NVD — ordered by EPSS band only",
+    "why": []
   }
 ]

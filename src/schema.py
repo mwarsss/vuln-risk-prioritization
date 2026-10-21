@@ -39,6 +39,9 @@ class Timing(str, Enum):
     # presence tracks the label (NVD analysed KEV CVEs first). Excluded from
     # PIT_SAFE_FEATURES; see FINDINGS section 11.
     ENRICHED = "enriched"
+    # Counted from dated public events up to an as-of date (publication + 1 day
+    # in training), never from a current total. See exploit_features.py.
+    AS_OF = "as_of"
     # The prediction target.
     LABEL = "label"
     # Identifier / bookkeeping, not fed to the model.
@@ -121,6 +124,16 @@ SCHEMA: tuple[Column, ...] = (
            "Distinct vendors affected. Proxy for blast radius.", bounds=(0, 10_000)),
     Column("n_cpe", "int32", Role.NUMERIC, Timing.ENRICHED, "NVD",
            "Count of affected product configurations.", bounds=(0, 100_000)),
+
+    # --- Exploit availability, counted as of publication + 1 day. ---
+    Column("edb_exploits", "float32", Role.NUMERIC, Timing.AS_OF, "Exploit-DB",
+           "Exploit-DB entries listed (date_added) by the as-of date."),
+    Column("msf_module", "float32", Role.NUMERIC, Timing.AS_OF, "Exploit-DB",
+           "1 if a Metasploit module was listed by the as-of date."),
+    Column("github_pocs", "float32", Role.NUMERIC, Timing.AS_OF, "PoC-in-GitHub",
+           "Proof-of-concept repos created by the as-of date. Star counts never read."),
+    Column("any_exploit", "float32", Role.NUMERIC, Timing.AS_OF, "derived",
+           "1 if any of the above is non-zero."),
 
     # --- Recomputed upstream. Snapshot-only. ---
     Column("epss_score", "float32", Role.NUMERIC, Timing.POINT_IN_TIME, "FIRST EPSS",

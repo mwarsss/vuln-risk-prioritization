@@ -616,6 +616,110 @@ built only from publication-time NVD data beats EPSS on PR-AUC in every one of
 six rolling windows, including a 2025 holdout untouched by any design decision
 (+55%), and at almost every budget with bootstrap intervals clear of zero.**
 
+## 12. TriageBand: review changes, compared on operational metrics
+
+A review of this project asked for: metrics a patching team feels instead of an
+area under a curve; fewer features for a better signal-to-noise ratio; a learned
+two-layer gradient boost over EPSS; an EPSS-like model built from scratch with
+EPSS-style feature engineering; and per-CVE explanations. `src/model/compare.py`
+tests each as a variant of TriageBand (the banded method of sections 10-11).
+
+### Metrics
+
+`src/model/metrics.py` follows the EPSS papers. At an *effort* level — the share
+of all CVEs a team remediates — **coverage** is the share of exploited CVEs
+caught and **efficiency** the share of patched CVEs that were exploited. Also
+reported: the effort needed to reach 50% coverage, and for probability outputs,
+Brier score and expected calibration error. PR-AUC remains in the JSON as a
+secondary figure.
+
+### Exploit availability, dated
+
+`src/features/exploit_features.py` adds what EPSS leans on hardest — whether
+exploit code exists — from two sources that date every item: Exploit-DB
+(`date_added`) and PoC-in-GitHub (`created_at`; star counts are current values
+and never read). Counts are taken as of publication + 1 day, the same instant as
+the EPSS snapshot. The leak this avoids is large:
+
+| exploit present on… | exploited CVEs | not exploited |
+|---|---|---|
+| counted as of publication + 1 day | 14.0% | 1.50% |
+| counted from today's data (a naive pull) | **53.1%** | 3.61% |
+
+A naive count would have been a fourth leak, bigger than the third. Day one,
+the signal is almost all GitHub proofs of concept; Exploit-DB rarely lists an
+exploit that early and no Metasploit module appeared within a day.
+
+### Decision rule, fixed before results
+
+Highest mean coverage at 1%, 2% and 5% effort over the five development windows
+(2022 H2 – 2024 H2). The 2025 window confirms; it does not choose.
+
+| window | V0 EPSS | V1 TriageBand | V2 lean | **V3 +exploit** | V4 lean+exploit | V5 EPSS-lite | V6 stack A | V7 stack B |
+|---|---|---|---|---|---|---|---|---|
+| 2022 H2 | 0.140 | 0.360 | 0.267 | 0.380 | 0.287 | 0.320 | 0.360 | 0.313 |
+| 2023 H1 | 0.095 | 0.143 | 0.122 | 0.148 | 0.127 | 0.212 | 0.344 | 0.259 |
+| 2023 H2 | 0.403 | 0.532 | 0.472 | 0.532 | 0.477 | 0.241 | 0.426 | 0.398 |
+| 2024 H1 | 0.333 | 0.517 | 0.417 | 0.539 | 0.417 | 0.211 | 0.361 | 0.294 |
+| 2024 H2 | 0.316 | 0.437 | 0.364 | 0.416 | 0.333 | 0.195 | 0.325 | 0.281 |
+| **dev mean** | 0.257 | 0.398 | 0.328 | **0.403** | 0.328 | 0.236 | 0.363 | 0.309 |
+| **2025 holdout** | 0.282 | 0.356 | 0.342 | **0.365** | 0.342 | 0.141 | 0.322 | 0.299 |
+
+One seed per variant (seed spread in earlier sections was ±0.002 PR-AUC); the
+chosen variant is trained with five for deployment.
+
+**V3 is chosen and the holdout confirms it.** On 2025 (26,862 CVEs, 116
+exploited), against EPSS:
+
+| effort | CVEs patched | EPSS caught | TriageBand caught | efficiency |
+|---|---|---|---|---|
+| 1% | 269 | 23 (20%) | **34 (29%)** | 8.6% → 12.6% |
+| 2% | 537 | 29 (25%) | **43 (37%)** | 5.4% → 8.0% |
+| 5% | 1,343 | 46 (40%) | **50 (43%)** | 3.4% → 3.7% |
+| 10% | 2,686 | 62 (53%) | **87 (75%)** | 2.3% → 3.2% |
+
+To reach 50% coverage: **1,564 patches instead of 1,907 (18% less work)**.
+
+### What each review suggestion did
+
+- **Exploit features (V3 vs V1): a small gain, not a large one.** Better in 3 of 5
+  development windows, equal in one, worse in one (2024 H2), and +0.009 on 2025
+  — about one more exploited CVE per budget level. Kept because the rule picked
+  it; the honest description is "modest".
+- **Feature reduction (V2, V4): consistently worse.** Cutting to the top 50
+  features by gain lost 5–10 points of coverage in every window. The signal is
+  spread thinly across many description terms, and gain from one model on a few
+  hundred positives is a noisy ranking (its top 50 includes terms like
+  `16 ipados`). Fewer features did not mean less noise here. K = 50 was fixed in
+  advance; other reduction methods were not tried and remain open.
+- **Two-layer boost (V6, V7): beats EPSS, loses to the bands.** Both readings of
+  "layer-1 score + EPSS" were built — with five extra features (A) and without
+  (B) — as shallow boosts constrained to be monotone in every input. A is the
+  better of the two. Neither matches the fixed banded rule on average, but A wins
+  decisively in 2023 H1 (0.344 vs 0.148), the window where EPSS itself was
+  weakest: a learned combination can lean away from EPSS when EPSS is having a
+  bad period, and a fixed rule cannot. Worth revisiting with more training data.
+- **EPSS reimplemented from public data (V5): close in development, short in
+  2025.** With no EPSS input, content plus dated exploit features reaches 0.236
+  against real EPSS's 0.257 on development windows, and wins 2 of 5 — but falls
+  to 0.141 against 0.282 in 2025. FIRST's private telemetry is worth a great
+  deal; public day-one data recovers part of it.
+- **Calibration.** On 2025, EPSS averages a 0.08% prediction against a 0.43%
+  realised rate — it forecasts 30-day exploitation, this label is one year. The
+  stacks are closer (0.15%, Brier 0.0041 vs 0.0042). TriageBand itself is a
+  ranking, not a probability, and makes no calibration claim.
+- **Explanations.** `src/model/explain.py` turns exact per-CVE SHAP values from
+  the trees into the three strongest present reasons, shown with every ranked
+  CVE, e.g. *description mentions "unauthenticated"; CVSS base score 10.0*.
+
+### Train / serve difference
+
+The model is trained on exploit counts as of publication + 1 day. Live ranking
+counts everything known today, because a defender scoring a month-old CVE can
+see its exploits. Exploit counts only grow with age, so live scores for older
+CVEs lean higher than training ever saw — the right direction for a
+prioritiser, but the evaluation above measures the day-one setting only.
+
 ## Reproducing
 
 ```bash
@@ -628,6 +732,7 @@ python -m src.model.blend             # rank-blend against EPSS (w chosen on val
 python -m src.model.complementarity   # per-subpopulation: where does content help?
 python -m src.model.two_stage         # gated + banded policies vs EPSS (sections 9-10)
 python -m src.model.verify_banded     # section 11: leak audit, ablation, bootstrap, null, rolling, 2025 holdout
+python -m src.model.compare           # section 12: TriageBand variants on coverage / efficiency
 python -m src.model.verify_pit_lag    # snapshot-vs-KEV-listing contamination
 python -m tests.test_ranking          # ranking primitives
 python -m tests.test_schema_gate      # every leak the contract must refuse

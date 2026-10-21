@@ -31,6 +31,7 @@ class RankedCVE(BaseModel):
     model_score: float | None
     base_score: float | None
     note: str
+    why: list[str]
 
 
 @app.get("/health")
@@ -43,6 +44,6 @@ def rank(req: RankRequest) -> list[RankedCVE]:
     if len(req.cve_ids) > MAX_IDS:
         raise HTTPException(413, f"at most {MAX_IDS} CVE IDs per request; use `python -m src.rank`")
     df = rank_cves(req.cve_ids, bundle, verbose=False)
-    cols = ["rank", "cve_id", "band", "epss", "model_score", "base_score", "note"]
+    cols = ["rank", "cve_id", "band", "epss", "model_score", "base_score", "note", "why"]
     records = df[cols].astype(object).where(df[cols].notna(), None).to_dict("records")
     return [RankedCVE(**r) for r in records]

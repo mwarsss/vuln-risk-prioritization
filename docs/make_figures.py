@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import matplotlib
+import matplotlib.ticker
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
@@ -94,39 +95,41 @@ def leak_timeline(out: Path) -> None:
     plt.close(fig)
 
 
-def rolling_chart(out: Path, verify: dict) -> None:
-    rows = verify["rolling"]
+def rolling_chart(out: Path, compare: dict) -> None:
+    """Mean coverage at 1/2/5% effort per period, EPSS vs TriageBand (compare.py V3)."""
+    def cov(v):
+        return sum(v["coverage_efficiency"][e]["coverage"] for e in ("0.01", "0.02", "0.05")) / 3
+    rows = compare["windows"]
     names = ["2022 Jul–Dec", "2023 Jan–Jun", "2023 Jul–Dec", "2024 Jan–Jun",
-             "2024 Jul–Dec", "2025 Jan–Aug (fresh)"]
+             "2024 Jul–Dec", "2025 Jan–Aug (holdout)"]
     fig, ax = plt.subplots(figsize=(10, 4.6), dpi=200, facecolor=SURF)
     ax.set_facecolor(SURF)
-    _title(fig, "Better than EPSS in every period, including data never used for any decision",
-           "PR-AUC by test period · each model trained only on bugs published before its "
-           "period · mean of 3 seeds")
+    _title(fig, "TriageBand catches more exploited CVEs than EPSS in every period",
+           "Share of exploited CVEs caught, averaged over patching 1%, 2% and 5% of all CVEs · "
+           "each model trained only on earlier CVEs")
+    pairs = []
     for i, (r, name) in enumerate(zip(rows, names)):
         y = len(rows) - 1 - i
-        e = r["pr_auc_epss"]
-        b = sum(r["pr_auc_banded_per_seed"]) / len(r["pr_auc_banded_per_seed"])
+        e, b = cov(r["variants"]["V0 EPSS"]), cov(r["variants"][compare["chosen"]])
+        pairs.append((e, b, y))
         ax.plot([e, b], [y, y], color=MUTED, lw=2, zorder=1)
         ax.plot(e, y, "o", ms=9, color=ORANGE, mec=SURF, mew=1.5, zorder=2)
         ax.plot(b, y, "o", ms=9, color=BLUE, mec=SURF, mew=1.5, zorder=2)
-        ax.text(b + 0.008, y, f"+{(b / e - 1):.0%}", va="center", fontsize=9, color=INK2)
-        fresh = "fresh" in name
-        ax.text(-0.006, y, name, ha="right", va="center", fontsize=9.5, color=INK,
-                weight="bold" if fresh else None)
-    top = len(rows) - 1
-    # Label the widest pair (2023 H2) so the two labels cannot collide.
-    r2, y2 = rows[2], top - 2
-    ax.annotate("EPSS alone", (r2["pr_auc_epss"], y2), xytext=(0, 11),
-                textcoords="offset points", ha="center", fontsize=9, color=INK)
-    ax.annotate("EPSS band + model", (sum(r2["pr_auc_banded_per_seed"]) / 3, y2),
-                xytext=(0, 11), textcoords="offset points", ha="center", fontsize=9, color=INK)
-    ax.set_xlim(0, 0.34); ax.set_ylim(-0.6, top + 0.8); ax.set_yticks([])
+        ax.text(b + 0.012, y, f"+{(b - e) * 100:.0f} pts", va="center", fontsize=9, color=INK2)
+        ax.text(-0.01, y, name, ha="right", va="center", fontsize=9.5, color=INK,
+                weight="bold" if "holdout" in name else None)
+    e, b, y = max(pairs, key=lambda p: p[1] - p[0])
+    ax.annotate("EPSS alone", (e, y), xytext=(0, 11), textcoords="offset points",
+                ha="center", fontsize=9, color=INK)
+    ax.annotate("TriageBand", (b, y), xytext=(0, 11), textcoords="offset points",
+                ha="center", fontsize=9, color=INK)
+    ax.set_xlim(0, 0.62); ax.set_ylim(-0.6, len(rows) - 0.2); ax.set_yticks([])
+    ax.xaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
     ax.grid(axis="x", color=GRID, lw=0.8); ax.set_axisbelow(True)
-    for s in ("top", "right", "left"):
-        ax.spines[s].set_visible(False)
+    for sp in ("top", "right", "left"):
+        ax.spines[sp].set_visible(False)
     ax.spines["bottom"].set_color(GRID); ax.tick_params(colors=INK2, length=0)
-    ax.set_xlabel("PR-AUC (higher is better)", color=INK2)
+    ax.set_xlabel("coverage (higher is better)", color=INK2)
     fig.subplots_adjust(left=0.2, right=0.95, top=0.8, bottom=0.13)
     fig.savefig(out, facecolor=SURF)
     plt.close(fig)
@@ -152,11 +155,11 @@ def architecture(out: Path) -> None:
 
     fig.text(0.04, 0.80, "OFFLINE — TRAINING", fontsize=8.5, weight="bold", color=INK2)
     box(0.04, 0.53, 0.17, 0.23, "Sources",
-        "NVD records\nEPSS daily archive\nCISA KEV list (labels)")
+        "NVD records · EPSS archive\nExploit-DB · PoC-in-GitHub\nCISA KEV list (labels)")
     box(0.25, 0.53, 0.22, 0.23, "dataset.py",
         "EPSS as of day after publication\nlabel: exploited within 1 year\nschema gate refuses leaky data")
     box(0.51, 0.53, 0.2, 0.23, "train.py",
-        "XGBoost × 5 seeds\npublication-time features only\n(no CPE)")
+        "XGBoost × 5 seeds\nNVD text, CVSS, CWE (no CPE)\n+ exploit counts at day 1")
     box(0.75, 0.53, 0.2, 0.23, "models/banded.joblib",
         "model + its encoders\n135,232 CVEs, 621 exploited", edge=BLUE)
     arrow((0.215, 0.645), (0.245, 0.645)); arrow((0.475, 0.645), (0.505, 0.645))
@@ -165,16 +168,16 @@ def architecture(out: Path) -> None:
     fig.text(0.04, 0.44, "LIVE — RANKING", fontsize=8.5, weight="bold", color=INK2)
     box(0.04, 0.17, 0.17, 0.23, "Your scan", "list of CVE IDs")
     box(0.25, 0.17, 0.22, 0.23, "rank.py — fetch",
-        "today's EPSS (FIRST API)\nNVD record: description,\nCVSS, CWE")
+        "today's EPSS (FIRST API)\nNVD: description, CVSS, CWE\nexploit counts to date")
     box(0.51, 0.17, 0.2, 0.23, "rank.py — score",
-        "1. EPSS picks the band\n2. model orders inside it\n3. flags missing data", edge=BLUE)
+        "1. EPSS picks the band\n2. model orders inside it\n3. top-3 reasons per CVE", edge=BLUE)
     box(0.75, 0.17, 0.2, 0.23, "Output",
         "CLI table / CSV\nAPI: POST /rank")
     arrow((0.215, 0.285), (0.245, 0.285)); arrow((0.475, 0.285), (0.505, 0.285))
     arrow((0.715, 0.285), (0.745, 0.285))
     arrow((0.85, 0.525), (0.66, 0.405))
-    fig.text(0.04, 0.06, "verify_banded.py re-tests the whole method: leak audit, ablation, "
-             "bootstrap, permutation null, six time periods, 2025 holdout.",
+    fig.text(0.04, 0.06, "verify_banded.py and compare.py re-test the method: leak audit, ablation, bootstrap, "
+             "permutation null, variants, six time periods, 2025 holdout.",
              fontsize=8.5, color=INK2)
     fig.savefig(out, facecolor=SURF)
     plt.close(fig)
@@ -197,13 +200,14 @@ def terminal(src: Path, out: Path) -> None:
 
 
 def main() -> None:
-    verify = json.loads((DOCS.parent / "data/processed/verify_banded.json").read_text())
+    compare = json.loads((DOCS.parent / "data/processed/compare.json").read_text())
     method_diagram(DOCS / "method-banded.png")
     leak_timeline(DOCS / "leak2-timeline.png")
-    rolling_chart(DOCS / "rolling-windows.png", verify)
+    rolling_chart(DOCS / "rolling-windows.png", compare)
     architecture(DOCS / "architecture.png")
     for name in ("verify", "api"):
         terminal(DOCS / "terminal" / f"{name}.txt", DOCS / f"terminal-{name}.png")
+    terminal(DOCS / "terminal" / "rank.txt", DOCS / "rank-cli.png")
     print("wrote", ", ".join(p.name for p in sorted(DOCS.glob("*.png"))))
 
 

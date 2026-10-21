@@ -19,9 +19,11 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from src.features.exploit_features import EXPLOIT_COLS, RAW, attach_exploit_features, load_events
 from src.ingestion.epss_client import fetch_epss_scores
 from src.ingestion.nvd_client import cve_features, fetch_cve
 from src.model.train import MODEL_PATH
+from src.model.explain import reasons
 from src.model.two_stage import banded_score
 
 BAND_LABELS = ("EPSS < 0.001", "EPSS 0.001–0.01", "EPSS 0.01–0.1", "EPSS ≥ 0.1")
@@ -39,10 +41,19 @@ def score_rows(rows: pd.DataFrame, epss: dict[str, float], bundle: dict) -> pd.D
     out["epss"] = out["cve_id"].map(epss)
     known = out["description"].fillna("").str.len() > 0
     content = np.zeros(len(out))
+    out["why"] = [[] for _ in range(len(out))]
     if known.any():
         X = bundle["featurizer"].transform(out[known])
+        cols = bundle.get("cols")
+        if cols is not None:
+            X = X[:, cols]
         content[known.values] = np.mean([m.predict_proba(X)[:, 1] for m in bundle["models"]],
                                         axis=0)
+        if all(hasattr(m, "get_booster") for m in bundle["models"]):
+            names = bundle["featurizer"].names()
+            names = [names[i] for i in cols] if cols is not None else names
+            why = reasons(bundle["models"], X, names)
+            out.loc[known, "why"] = pd.Series(why, index=out.index[known])
     # No NVD record means no content signal: last within its band, and flagged.
     content[~known.values] = -1.0
     edges = bundle["band_edges"]
@@ -77,7 +88,26 @@ def rank_cves(cve_ids: list[str], bundle: dict | None = None,
     frame = pd.DataFrame(rows).reindex(columns=["cve_id", "published_date", "description",
                                                 *bundle["features"]["numeric"],
                                                 *bundle["features"]["categorical"]])
+    if set(EXPLOIT_COLS) & set(bundle["features"]["numeric"]):
+        frame = with_exploit_features(frame, verbose)
     return score_rows(frame, epss, bundle)
+
+
+def with_exploit_features(frame: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
+    """Exploit counts as of today, from the local Exploit-DB / PoC-in-GitHub copies."""
+    if not (RAW / "files_exploits.csv").exists() or not (RAW / "poc-in-github.zip").exists():
+        if verbose:
+            print(f"warning: no exploit data in {RAW}/ — exploit features set to 0; "
+                  "see src/features/exploit_features.py to download")
+        return frame.assign(**{c: 0.0 for c in EXPLOIT_COLS})
+    known = frame["published_date"].notna()
+    out = frame.copy()
+    out.loc[~known, list(EXPLOIT_COLS)] = 0.0
+    if known.any():
+        live = attach_exploit_features(frame[known], load_events(),
+                                       as_of_date=pd.Timestamp.now().normalize())
+        out.loc[known, list(EXPLOIT_COLS)] = live[list(EXPLOIT_COLS)].values
+    return out
 
 
 def main() -> None:
@@ -114,8 +144,10 @@ def main() -> None:
                          for c, v in zip(table.columns, cells)).rstrip()
 
     print(line(table.columns))
-    for row in table.itertuples(index=False):
+    for row, why in zip(table.itertuples(index=False), show["why"]):
         print(line(row))
+        if why:
+            print(" " * (widths["rank"] + 2) + "why: " + "; ".join(why))
 
 
 if __name__ == "__main__":

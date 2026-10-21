@@ -1,0 +1,18 @@
+$ python -m src.rank CVE-2024-3400 CVE-2023-4966 CVE-2024-1086 \
+    CVE-2024-6387 CVE-2024-38063 CVE-2024-2961 CVE-2099-99999
+
+model trained through 2025-08-06 on 135,232 CVEs
+rank  cve_id          band            epss  model  cvss  note
+   1  CVE-2024-3400   EPSS ≥ 0.1    1.0000  0.996  10.0
+      why: 45 public proof-of-concept repo(s) on GitHub; 3 weakness type(s) listed; description mentions "unauthenticated"
+   2  CVE-2024-1086   EPSS ≥ 0.1    0.2806  0.988   7.8
+      why: 17 public proof-of-concept repo(s) on GitHub; description mentions "exploited"; 2 weakness type(s) listed
+   3  CVE-2023-4966   EPSS ≥ 0.1    1.0000  0.968   7.5
+      why: 14 public proof-of-concept repo(s) on GitHub; 2 weakness type(s) listed; description mentions "vpn"
+   4  CVE-2024-38063  EPSS ≥ 0.1    0.7056  0.961   9.8
+      why: 32 public proof-of-concept repo(s) on GitHub; 2 weakness type(s) listed; CVSS base score 9.8
+   5  CVE-2024-6387   EPSS ≥ 0.1    0.9951  0.918   8.1
+      why: 95 public proof-of-concept repo(s) on GitHub; 2 weakness type(s) listed; description mentions "unauthenticated"
+   6  CVE-2024-2961   EPSS ≥ 0.1    0.8833  0.115   7.3
+      why: 17 public proof-of-concept repo(s) on GitHub; public exploit code exists; privileges required: none
+   7  CVE-2099-99999  EPSS < 0.001       —      —     —  not in NVD — ordered by EPSS band only
